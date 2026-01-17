@@ -21,7 +21,7 @@ function App() {
   return (
     <AuthProvider>
       <DataProvider>
-        <BrowserRouter>
+        <BrowserRouter basename="/G-tec">
           <Toaster />
           <Routes>
             <Route path="/" element={<Store />} />
