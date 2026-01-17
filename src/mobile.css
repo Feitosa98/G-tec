@@ -1,0 +1,108 @@
+/* Mobile Responsiveness Additions */
+
+@media (max-width: 768px) {
+
+    /* Header Mobile */
+    .header .container {
+        padding: 0 1rem;
+    }
+
+    .header .logo img {
+        height: 45px !important;
+    }
+
+    .search-bar {
+        display: none !important;
+    }
+
+    /* Product Grid Mobile */
+    .store-page {
+        padding: 0 !important;
+    }
+
+    .container {
+        padding: 1rem !important;
+    }
+
+    /* Filters Sidebar - Hide on mobile, show as modal */
+    .filters {
+        display: none !important;
+    }
+
+    /* Product Cards - Single column on small screens */
+    div[style*="gridTemplateColumns"] {
+        grid-template-columns: 1fr !important;
+        gap: 1rem !important;
+    }
+
+    /* Cart Sidebar - Full width on mobile */
+    .cart-sidebar {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    /* Hero Section */
+    .hero h1 {
+        font-size: 2rem !important;
+    }
+
+    .hero p {
+        font-size: 1rem !important;
+    }
+
+    /* Product Detail - Stack layout */
+    .product-detail-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Buttons - Touch friendly */
+    button,
+    .btn-primary,
+    .btn-icon {
+        min-height: 44px !important;
+        min-width: 44px !important;
+    }
+
+    /* Admin Dashboard - Responsive cards */
+    .admin-cards {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Typography scaling */
+    h1 {
+        font-size: 1.75rem !important;
+    }
+
+    h2 {
+        font-size: 1.5rem !important;
+    }
+
+    h3 {
+        font-size: 1.25rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+
+    /* Extra small screens */
+    .container {
+        padding: 0.5rem !important;
+    }
+
+    .product-card {
+        font-size: 0.9rem;
+    }
+
+    /* Stack price and button vertically on tiny screens */
+    .product-card .price-action {
+        flex-direction: column !important;
+        gap: 0.5rem !important;
+    }
+}
+
+/* Tablet adjustments */
+@media (min-width: 769px) and (max-width: 1024px) {
+    div[style*="gridTemplateColumns"] {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+}
