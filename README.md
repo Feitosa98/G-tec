@@ -3,8 +3,11 @@
 ![React](https://img.shields.io/badge/React-19.2.0-61DAFB?style=for-the-badge&logo=react&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-7.2.4-646CFF?style=for-the-badge&logo=vite&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+![Deploy](https://img.shields.io/badge/Deploy-GitHub%20Pages-blue?style=for-the-badge&logo=github)
 
 Plataforma de e-commerce moderna e completa para a **G-TEC Informática**, desenvolvida com React e Vite. Sistema integrado de vendas online com painel administrativo, gerenciamento de produtos, pedidos e análise financeira.
+
+## 🌐 [**Acesse a Demonstração Online →**](https://feitosa98.github.io/G-tec/)
 
 ## 📋 Índice
 
