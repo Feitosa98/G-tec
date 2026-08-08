@@ -11,15 +11,15 @@ const LoginPage = () => {
     const [formData, setFormData] = useState({ name: '', email: '', password: '' });
     const [error, setError] = useState('');
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
 
         let result;
         if (isRegister) {
-            result = register(formData.name, formData.email, formData.password);
+            result = await register(formData.name, formData.email, formData.password);
         } else {
-            result = login(formData.email, formData.password);
+            result = await login(formData.email, formData.password);
         }
 
         if (result.success) {

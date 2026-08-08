@@ -4,26 +4,22 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldAlert } from 'lucide-react';
 
 const AdminLogin = () => {
-    const { login } = useAuth();
+    const { loginAdmin } = useAuth();
     const navigate = useNavigate();
 
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
 
         // Admin check is done inside login function based on credentials
-        const result = login(email, password);
+        const result = await loginAdmin(email, password);
 
         if (result.success) {
-            if (email === 'admin') { // Extra check for UX flow
-                navigate('/admin');
-            } else {
-                setError('Acesso não autorizado. Use credenciais de administrador.');
-            }
+            navigate('/admin');
         } else {
             setError(result.message);
         }

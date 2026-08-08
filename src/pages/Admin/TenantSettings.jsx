@@ -49,14 +49,18 @@ const TenantSettings = () => {
         reader.readAsDataURL(file);
     };
 
-    const handleSave = (event) => {
+    const handleSave = async (event) => {
         event.preventDefault();
         if (!settings.businessName || !settings.shortName || !settings.storeSlug) {
             showToast.error('Preencha o nome da empresa, nome curto e identificador do link.');
             return;
         }
-        updateTenant(settings);
-        showToast.success('Identidade da empresa atualizada.');
+        try {
+            await updateTenant(settings);
+            showToast.success('Identidade da empresa atualizada.');
+        } catch {
+            showToast.error('Não foi possível salvar a identidade no banco da loja.');
+        }
     };
 
     const copyPublicUrl = async () => {

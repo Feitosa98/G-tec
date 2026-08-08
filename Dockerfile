@@ -3,25 +3,28 @@
 FROM node:22-alpine AS build
 
 WORKDIR /app
-
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-
 COPY . .
 
 ARG VITE_BASE_PATH=/
 ENV VITE_BASE_PATH=${VITE_BASE_PATH}
-
 RUN npm run build
 
-FROM nginx:alpine AS production
+FROM node:22-alpine AS production
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
+WORKDIR /app
+ENV NODE_ENV=production
 
-EXPOSE 80
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/src/data/products.js ./src/data/products.js
+COPY server ./server
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1/ > /dev/null || exit 1
+EXPOSE 3000
 
-CMD ["nginx", "-g", "daemon off;"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+  CMD wget -qO- http://127.0.0.1:3000/api/health > /dev/null || exit 1
+
+CMD ["node", "server/index.js"]

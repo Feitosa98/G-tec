@@ -1,52 +1,49 @@
 # Publicação na Hostinger com Docker
 
-Esta configuração publica a aplicação na porta `8081` do VPS e serve o site na raiz do domínio.
+A aplicação usa dois contêineres: a API/web em Node.js e o PostgreSQL. A porta pública é `8081` e os dados ficam no volume persistente `gtec_postgres_data`.
 
-## Opção 1 — Docker Manager da Hostinger
+## Variáveis obrigatórias
 
-1. No hPanel, abra **VPS → Gerenciar → Docker Manager**.
-2. Escolha **Compose** e crie um projeto usando este repositório GitHub.
-3. Confirme que o projeto usa o arquivo `docker-compose.yml`.
-4. Clique em **Deploy** e aguarde o serviço ficar saudável.
-5. O acesso inicial será `http://IP-DO-VPS:8081`.
+Cadastre estas variáveis no ambiente do projeto Docker e use valores fortes e exclusivos:
 
-## Opção 2 — Terminal do VPS
-
-```bash
-git clone https://github.com/Feitosa98/G-tec.git
-cd G-tec
-docker compose up -d --build
-docker compose ps
+```env
+GTEC_DB_PASSWORD=troque-por-uma-senha-forte
+SAAS_ADMIN_USER=gestor
+SAAS_ADMIN_PASSWORD=troque-por-uma-senha-forte
+SAAS_TOKEN_SECRET=troque-por-uma-chave-aleatoria-longa
+DEFAULT_STORE_ADMIN_PASSWORD=troque-por-uma-senha-forte
 ```
 
-Para acompanhar a inicialização:
+Não publique o arquivo `.env` no Git. A área reservada fica em `/gestor-saas` e não aparece nos menus da loja.
 
-```bash
-docker compose logs -f web
-```
+## Docker Manager da Hostinger
+
+1. Abra **VPS → Gerenciar → Docker Manager**.
+2. Use **Compose a partir de URL** com `docker-compose.hostinger.yml`.
+3. Preencha as variáveis de ambiente antes da implantação.
+4. Aguarde os serviços `db` e `web` ficarem saudáveis.
+5. Acesse `http://IP-DO-VPS:8081`.
+
+## Isolamento SaaS
+
+- O banco `gtec_control` guarda somente o cadastro das lojas.
+- Cada nova loja recebe um banco PostgreSQL físico exclusivo.
+- Cada banco possui tabelas próprias de produtos, clientes, vendas, despesas, cobranças e usuários.
+- Desativar uma loja bloqueia seu acesso sem apagar seu banco.
 
 ## Domínio e HTTPS
 
-1. Crie um registro DNS do tipo `A` apontando o domínio ou subdomínio para o IP do VPS.
-2. No Docker Manager, configure o proxy reverso da Hostinger/Traefik para encaminhar o domínio ao serviço `web` na porta interna `80`; como alternativa, use o Nginx Proxy Manager apontando para a porta externa `8081`.
-3. Ative o certificado Let's Encrypt no proxy.
+Crie um registro DNS `A` para o IP do VPS e configure Traefik ou outro proxy reverso apontando para o serviço `web` na porta interna `3000`. Ative um certificado Let's Encrypt.
 
-## Atualização
-
-Após enviar uma nova versão ao GitHub, atualize o projeto pelo Docker Manager. Pelo terminal:
+## Atualização e diagnóstico
 
 ```bash
-git pull
 docker compose up -d --build
-```
-
-## Comandos úteis
-
-```bash
 docker compose ps
 docker compose logs --tail=100 web
-docker compose restart web
-docker compose down
+docker compose logs --tail=100 db
 ```
 
-> Os dados atuais ainda ficam no `localStorage` de cada navegador. O contêiner não possui banco de dados; para o SaaS real, será necessário adicionar API, banco e armazenamento persistente.
+## Backup
+
+O volume PostgreSQL é persistente, mas deve entrar na rotina de backup da VPS. Para exportar o banco central e todos os bancos de lojas, use `pg_dumpall` dentro do contêiner `db`.

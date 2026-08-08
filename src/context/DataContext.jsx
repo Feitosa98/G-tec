@@ -3,6 +3,7 @@ import { products as initialProducts } from '../data/products';
 import { DataContext } from './data-context';
 
 const defaultTenant = {
+    id: 'gtec-default',
     businessName: 'GTEC Informática',
     shortName: 'GTEC',
     logoUrl: `${import.meta.env.BASE_URL}logo.png`,
@@ -14,8 +15,18 @@ const defaultTenant = {
     customDomain: '',
     whatsapp: '5592992800023',
     email: 'contato@gtecinformatica.com.br',
+    billingEmail: '',
+    phone: '',
     document: '45.123.789/0001-90',
-    address: 'Manaus - AM'
+    address: 'Manaus - AM',
+    street: '',
+    addressNumber: '',
+    neighborhood: '',
+    city: 'Manaus',
+    state: 'AM',
+    postalCode: '',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z'
 };
 
 const readStoredValue = (key, fallback) => {
@@ -28,36 +39,66 @@ const readStoredValue = (key, fallback) => {
     }
 };
 
+const resolveTenantSlug = () => new URLSearchParams(window.location.search).get('loja')
+    || localStorage.getItem('gtec-active-tenant')
+    || defaultTenant.storeSlug;
+
+const getSessionToken = () => readStoredValue('gtec-session', {})?.token || '';
+
+const storeRequest = async (slug, path, options = {}) => {
+    const token = getSessionToken();
+    const response = await fetch(`/api/store/${slug}/${path}`, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers }
+    });
+    if (!response.ok) throw new Error('Não foi possível salvar os dados da loja.');
+    return response.json();
+};
+
 export const DataProvider = ({ children }) => {
     // --- STATE ---
-    const [products, setProducts] = useState(() => readStoredValue('gtec-products-v5', initialProducts));
-    const [sales, setSales] = useState(() => readStoredValue('gtec-sales-v2', []));
-    const [expenses, setExpenses] = useState(() => readStoredValue('gtec-expenses-v2', []));
-    const [cart, setCart] = useState(() => readStoredValue('gtec-cart-v2', []));
-    const [tenant, setTenant] = useState(() => ({
-        ...defaultTenant,
-        ...readStoredValue('gtec-tenant-v1', {})
-    }));
+    const [activeTenantSlug] = useState(resolveTenantSlug);
+    const [tenant, setTenant] = useState(defaultTenant);
+    const [products, setProducts] = useState(initialProducts);
+    const [sales, setSales] = useState([]);
+    const [expenses, setExpenses] = useState([]);
+    const [cart, setCart] = useState(() => readStoredValue(`gtec-cart:${activeTenantSlug}`, []));
 
     // --- PERSISTENCE ---
     useEffect(() => {
-        localStorage.setItem('gtec-products-v5', JSON.stringify(products));
-    }, [products]);
+        let cancelled = false;
+        const loadStore = async () => {
+            try {
+                const [tenantResponse, productsResponse, salesResponse, expensesResponse] = await Promise.all([
+                    fetch(`/api/tenants/resolve?slug=${encodeURIComponent(activeTenantSlug)}`),
+                    fetch(`/api/store/${activeTenantSlug}/products`),
+                    fetch(`/api/store/${activeTenantSlug}/sales`),
+                    fetch(`/api/store/${activeTenantSlug}/expenses`)
+                ]);
+                if (!tenantResponse.ok) throw new Error('Loja não encontrada.');
+                const [tenantData, productsData, salesData, expensesData] = await Promise.all([
+                    tenantResponse.json(), productsResponse.json(), salesResponse.json(), expensesResponse.json()
+                ]);
+                if (!cancelled) {
+                    setTenant(current => ({ ...current, ...tenantData }));
+                    if (Array.isArray(productsData)) setProducts(productsData);
+                    if (Array.isArray(salesData)) setSales(salesData);
+                    if (Array.isArray(expensesData)) setExpenses(expensesData);
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        };
+        loadStore();
+        return () => { cancelled = true; };
+    }, [activeTenantSlug]);
 
     useEffect(() => {
-        localStorage.setItem('gtec-sales-v2', JSON.stringify(sales));
-    }, [sales]);
+        localStorage.setItem(`gtec-cart:${activeTenantSlug}`, JSON.stringify(cart));
+    }, [activeTenantSlug, cart]);
 
     useEffect(() => {
-        localStorage.setItem('gtec-expenses-v2', JSON.stringify(expenses));
-    }, [expenses]);
-
-    useEffect(() => {
-        localStorage.setItem('gtec-cart-v2', JSON.stringify(cart));
-    }, [cart]);
-
-    useEffect(() => {
-        localStorage.setItem('gtec-tenant-v1', JSON.stringify(tenant));
+        localStorage.setItem('gtec-active-tenant', tenant.storeSlug);
 
         const root = document.documentElement;
         root.style.setProperty('--color-primary', tenant.primaryColor);
@@ -79,14 +120,17 @@ export const DataProvider = ({ children }) => {
     const addProduct = (product) => {
         const newProduct = { ...product, id: crypto.randomUUID() };
         setProducts([...products, newProduct]);
+        storeRequest(activeTenantSlug, 'products', { method: 'POST', body: JSON.stringify(newProduct) }).catch(console.error);
     };
 
     const updateProduct = (updatedProduct) => {
         setProducts(products.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+        storeRequest(activeTenantSlug, `products/${updatedProduct.id}`, { method: 'PUT', body: JSON.stringify(updatedProduct) }).catch(console.error);
     };
 
     const deleteProduct = (id) => {
         setProducts(products.filter(p => p.id !== id));
+        storeRequest(activeTenantSlug, `products/${id}`, { method: 'DELETE' }).catch(console.error);
     };
 
     // Sales Actions
@@ -142,10 +186,16 @@ export const DataProvider = ({ children }) => {
             };
         }
         setSales(currentSales => [...currentSales, newSale]);
+        storeRequest(activeTenantSlug, 'sales', { method: 'POST', body: JSON.stringify(newSale) }).catch(console.error);
     };
 
     const updateOrderStatus = (saleId, newStatus) => {
-        setSales(currentSales => currentSales.map(sale => sale.id === saleId ? { ...sale, status: newStatus } : sale));
+        setSales(currentSales => currentSales.map(sale => {
+            if (sale.id !== saleId) return sale;
+            const updatedSale = { ...sale, status: newStatus };
+            storeRequest(activeTenantSlug, `sales/${saleId}`, { method: 'PUT', body: JSON.stringify(updatedSale) }).catch(console.error);
+            return updatedSale;
+        }));
     };
 
     const markInstallmentPaid = (saleId, installmentId) => {
@@ -158,28 +208,34 @@ export const DataProvider = ({ children }) => {
                     : installment
             );
 
-            return {
+            const updatedSale = {
                 ...sale,
                 installments,
                 paymentStatus: installments.length > 0 && installments.every(installment => installment.status === 'Pago')
                     ? 'Pago'
                     : 'Pendente'
             };
+            storeRequest(activeTenantSlug, `sales/${saleId}`, { method: 'PUT', body: JSON.stringify(updatedSale) }).catch(console.error);
+            return updatedSale;
         }));
     };
 
     const updateTenant = (settings) => {
         setTenant(currentTenant => ({ ...currentTenant, ...settings }));
+        return storeRequest(activeTenantSlug, 'settings', { method: 'PUT', body: JSON.stringify(settings) });
     };
 
     // Expense Actions
     const addExpense = (expense) => {
         // expense: { id, name, value, date, type: 'fixed' | 'variable' }
-        setExpenses([...expenses, { ...expense, id: crypto.randomUUID() }]);
+        const newExpense = { ...expense, id: crypto.randomUUID() };
+        setExpenses([...expenses, newExpense]);
+        storeRequest(activeTenantSlug, 'expenses', { method: 'POST', body: JSON.stringify(newExpense) }).catch(console.error);
     };
 
     const removeExpense = (id) => {
         setExpenses(expenses.filter(e => e.id !== id));
+        storeRequest(activeTenantSlug, `expenses/${id}`, { method: 'DELETE' }).catch(console.error);
     };
 
     // Cart Actions
@@ -265,7 +321,10 @@ export const DataProvider = ({ children }) => {
         // Merge and Save
         const allFinancials = [...newSales, ...expenses];
         setSales(allFinancials); // In our simplified model, 'sales' holds all transactions
-        localStorage.setItem('gtec-sales-v2', JSON.stringify(allFinancials));
+        allFinancials.forEach(record => {
+            const collection = record.type === 'expense' ? 'expenses' : 'sales';
+            storeRequest(activeTenantSlug, collection, { method: 'POST', body: JSON.stringify(record) }).catch(console.error);
+        });
 
         return true;
     };

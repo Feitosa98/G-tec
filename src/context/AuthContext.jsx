@@ -3,7 +3,12 @@ import { AuthContext } from './auth-context';
 
 const readSession = () => {
     try {
-        return JSON.parse(localStorage.getItem('gtec-session'));
+        const session = JSON.parse(localStorage.getItem('gtec-session'));
+        if (session?.role === 'admin' && !session.token) {
+            localStorage.removeItem('gtec-session');
+            return null;
+        }
+        return session;
     } catch {
         localStorage.removeItem('gtec-session');
         return null;
@@ -13,48 +18,60 @@ const readSession = () => {
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(readSession); // { name, email, role: 'admin' | 'customer' }
 
-    // Login Logic
-    const login = (email, password) => {
-        // 1. Check Admin Hardcoded
-        if (email === 'admin' && password === 'admin123') {
-            const adminUser = { name: 'Administrador', email: 'admin', role: 'admin' };
-            setUser(adminUser);
-            localStorage.setItem('gtec-session', JSON.stringify(adminUser));
-            return { success: true };
-        }
+    const getStoreSlug = () => new URLSearchParams(window.location.search).get('loja')
+        || localStorage.getItem('gtec-active-tenant')
+        || 'gtec-informatica';
 
-        // 2. Check Customers in LocalStorage
-        const users = JSON.parse(localStorage.getItem('gtec-users') || '[]');
-        const foundUser = users.find(u => u.email === email && u.password === password);
-
-        if (foundUser) {
-            const sessionUser = { name: foundUser.name, email: foundUser.email, role: 'customer' };
+    const login = async (email, password) => {
+        try {
+            const response = await fetch(`/api/store/${getStoreSlug()}/customer/login`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password })
+            });
+            const data = await response.json();
+            if (!response.ok) return { success: false, message: data.message || 'Credenciais inválidas.' };
+            const sessionUser = { ...data.user, token: data.token };
             setUser(sessionUser);
             localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
             return { success: true };
+        } catch {
+            return { success: false, message: 'Não foi possível conectar ao servidor.' };
         }
-
-        return { success: false, message: 'Credenciais inválidas.' };
     };
 
-    // Register Logic
-    const register = (name, email, password) => {
-        const users = JSON.parse(localStorage.getItem('gtec-users') || '[]');
-
-        if (users.find(u => u.email === email)) {
-            return { success: false, message: 'E-mail já cadastrado.' };
+    const loginAdmin = async (username, password) => {
+        const storeSlug = getStoreSlug();
+        try {
+            const response = await fetch(`/api/store/${storeSlug}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+            if (!response.ok) return { success: false, message: data.message || 'Credenciais inválidas.' };
+            const sessionUser = { ...data.user, token: data.token };
+            setUser(sessionUser);
+            localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
+            localStorage.setItem('gtec-active-tenant', storeSlug);
+            return { success: true };
+        } catch {
+            return { success: false, message: 'Não foi possível conectar ao servidor.' };
         }
+    };
 
-        const newUser = { name, email, password, role: 'customer' }; // In real app, hash password!
-        users.push(newUser);
-        localStorage.setItem('gtec-users', JSON.stringify(users));
-
-        // Auto login
-        const sessionUser = { name, email, role: 'customer' };
-        setUser(sessionUser);
-        localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
-
-        return { success: true };
+    const register = async (name, email, password) => {
+        try {
+            const response = await fetch(`/api/store/${getStoreSlug()}/customer/register`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password })
+            });
+            const data = await response.json();
+            if (!response.ok) return { success: false, message: data.message || 'Não foi possível cadastrar.' };
+            const sessionUser = { ...data.user, token: data.token };
+            setUser(sessionUser);
+            localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
+            return { success: true };
+        } catch {
+            return { success: false, message: 'Não foi possível conectar ao servidor.' };
+        }
     };
 
     const logout = () => {
@@ -63,7 +80,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     return (
-        <AuthContext.Provider value={{ user, login, register, logout, loading: false }}>
+        <AuthContext.Provider value={{ user, login, loginAdmin, register, logout, loading: false }}>
             {children}
         </AuthContext.Provider>
     );

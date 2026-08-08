@@ -19,6 +19,7 @@ const TenantSettings = lazy(() => import('./pages/Admin/TenantSettings'));
 const AccountPage = lazy(() => import('./pages/AccountPage'));
 const ProductDetail = lazy(() => import('./pages/ProductDetail'));
 const Checkout = lazy(() => import('./pages/Checkout'));
+const SaasManager = lazy(() => import('./pages/SaasManager'));
 
 const PageFallback = () => (
   <div style={{ minHeight: '60vh', display: 'grid', placeItems: 'center' }}>
@@ -44,6 +45,7 @@ function App() {
               <Route path="/login" element={<LoginPage />} />
               <Route path="/account" element={<AccountPage />} />
               <Route path="/admin/login" element={<AdminLogin />} />
+              <Route path="/gestor-saas" element={<SaasManager />} />
 
               {/* Admin Routes */}
               <Route path="/admin" element={<AdminLayout />}>

@@ -1,11 +1,45 @@
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gtec
+      POSTGRES_PASSWORD: ${GTEC_DB_PASSWORD:-gtec_local_change_me}
+      POSTGRES_DB: gtec_control
+    volumes:
+      - gtec_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gtec -d gtec_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+
   web:
     build:
       context: https://github.com/Feitosa98/G-tec.git#main
       args:
         VITE_BASE_PATH: /
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: gtec
+      PGPASSWORD: ${GTEC_DB_PASSWORD:-gtec_local_change_me}
+      PGDATABASE: gtec_control
+      SAAS_ADMIN_USER: ${SAAS_ADMIN_USER:-gestor}
+      SAAS_ADMIN_PASSWORD: ${SAAS_ADMIN_PASSWORD:-admin123}
+      SAAS_TOKEN_SECRET: ${SAAS_TOKEN_SECRET:-local-token-secret-change-me}
+      DEFAULT_STORE_ADMIN_PASSWORD: ${DEFAULT_STORE_ADMIN_PASSWORD:-admin123}
     ports:
-      - "8081:80"
+      - "8081:3000"
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  gtec_postgres_data:
