@@ -1,6 +1,6 @@
 # Publicação na Hostinger com Docker
 
-Esta configuração publica a aplicação na porta `8080` do VPS e serve o site na raiz do domínio.
+Esta configuração publica a aplicação na porta `8081` do VPS e serve o site na raiz do domínio.
 
 ## Opção 1 — Docker Manager da Hostinger
 
@@ -8,7 +8,7 @@ Esta configuração publica a aplicação na porta `8080` do VPS e serve o site 
 2. Escolha **Compose** e crie um projeto usando este repositório GitHub.
 3. Confirme que o projeto usa o arquivo `docker-compose.yml`.
 4. Clique em **Deploy** e aguarde o serviço ficar saudável.
-5. O acesso inicial será `http://IP-DO-VPS:8080`.
+5. O acesso inicial será `http://IP-DO-VPS:8081`.
 
 ## Opção 2 — Terminal do VPS
 
@@ -28,7 +28,7 @@ docker compose logs -f web
 ## Domínio e HTTPS
 
 1. Crie um registro DNS do tipo `A` apontando o domínio ou subdomínio para o IP do VPS.
-2. No Docker Manager, configure o proxy reverso da Hostinger/Traefik para encaminhar o domínio ao serviço `web` na porta interna `80`; como alternativa, use o Nginx Proxy Manager apontando para a porta externa `8080`.
+2. No Docker Manager, configure o proxy reverso da Hostinger/Traefik para encaminhar o domínio ao serviço `web` na porta interna `80`; como alternativa, use o Nginx Proxy Manager apontando para a porta externa `8081`.
 3. Ative o certificado Let's Encrypt no proxy.
 
 ## Atualização
