@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: https://github.com/Feitosa98/G-tec.git#agent/saas-hostinger-deploy
+      args:
+        VITE_BASE_PATH: /
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    security_opt:
+      - no-new-privileges:true
