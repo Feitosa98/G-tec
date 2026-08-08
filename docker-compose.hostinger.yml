@@ -1,7 +1,7 @@
 services:
   web:
     build:
-      context: https://github.com/Feitosa98/G-tec.git#agent/saas-hostinger-deploy
+      context: https://github.com/Feitosa98/G-tec.git#main
       args:
         VITE_BASE_PATH: /
     restart: unless-stopped
