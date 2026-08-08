@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useData } from '../../context/DataContext';
+import { useData } from '../../hooks/useData';
 import { showToast } from '../../utils/toast';
 import { ArrowLeft, Upload, Eye, Check, Cpu, HardDrive, Zap, ShoppingCart } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';

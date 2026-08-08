@@ -1,10 +1,27 @@
 import React, { useState } from 'react';
-import { useData } from '../../context/DataContext';
+import { useData } from '../../hooks/useData';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { DollarSign, TrendingUp, ShoppingBag, PieChart, FileText, Table, Download } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
+
+const escapeCsvCell = (value) => {
+    const stringValue = String(value ?? '');
+    const safeValue = /^[=+\-@]/.test(stringValue) ? `'${stringValue}` : stringValue;
+    return `"${safeValue.replaceAll('"', '""')}"`;
+};
+
+const downloadCsv = (rows, filename) => {
+    const content = rows.map(row => row.map(escapeCsvCell).join(';')).join('\r\n');
+    const blob = new Blob([`\uFEFF${content}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+};
 
 const Card = ({ title, value, subtitle, icon: Icon, color }) => (
     <div style={{
@@ -33,7 +50,7 @@ const Card = ({ title, value, subtitle, icon: Icon, color }) => (
 );
 
 const Dashboard = () => {
-    const { getFinancialSummary, generateMockData, sales } = useData();
+    const { generateMockData, sales, tenant } = useData();
     const [timeRange, setTimeRange] = useState('30d');
 
     // --- 1. Filter Logic ---
@@ -149,7 +166,7 @@ const Dashboard = () => {
                 img.onerror = () => resolve(null);
             });
 
-            const logo = await loadImage('/logo.png');
+            const logo = await loadImage(tenant.logoUrl);
 
             // Header
             doc.setFillColor(15, 23, 42);
@@ -159,7 +176,7 @@ const Dashboard = () => {
             doc.setTextColor(255, 255, 255);
             doc.setFontSize(22);
             doc.setFont('helvetica', 'bold');
-            doc.text('GTEC Informática', 50, 20);
+            doc.text(tenant.businessName, 50, 20);
 
             doc.setTextColor(250, 204, 21);
             doc.setFontSize(14);
@@ -212,30 +229,34 @@ const Dashboard = () => {
 
     const exportToExcel = () => {
         try {
-            const summaryData = [
-                { Indicador: 'Receita Total', Valor: filteredSummary.totalRevenue },
-                { Indicador: 'Custos Totais', Valor: filteredSummary.totalExpenses + filteredSummary.totalCOGS },
-                { Indicador: 'Lucro Líquido', Valor: netProfit },
-                { Indicador: 'Pedidos', Valor: filteredSummary.transactionCount }
+            const summaryRows = [
+                ['Resumo financeiro'],
+                ['Indicador', 'Valor'],
+                ['Receita Total', filteredSummary.totalRevenue],
+                ['Custos Totais', filteredSummary.totalExpenses + filteredSummary.totalCOGS],
+                ['Lucro Líquido', netProfit],
+                ['Pedidos', filteredSummary.transactionCount],
+                []
             ];
 
-            const salesData = filteredSales.map(s => ({
-                ID: s.id,
-                Data: new Date(s.date).toLocaleDateString('pt-BR'),
-                Cliente: s.userEmail,
-                Total: s.total,
-                Custo: s.totalCost,
-                Lucro: (s.total || 0) - (s.totalCost || 0),
-                Status: s.status
-            }));
+            const salesRows = [
+                ['Vendas'],
+                ['ID', 'Data', 'Cliente', 'Total', 'Custo', 'Lucro', 'Status'],
+                ...filteredSales.map(sale => [
+                    sale.id,
+                    new Date(sale.date).toLocaleDateString('pt-BR'),
+                    sale.userEmail,
+                    sale.total,
+                    sale.totalCost,
+                    (sale.total || 0) - (sale.totalCost || 0),
+                    sale.status
+                ])
+            ];
 
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryData), "Resumo");
-            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesData), "Vendas");
-            XLSX.writeFile(wb, "relatorio-gtec.xlsx");
+            downloadCsv([...summaryRows, ...salesRows], 'relatorio-gtec.csv');
         } catch (err) {
             console.error(err);
-            alert("Erro ao gerar Excel.");
+            alert("Erro ao gerar a planilha.");
         }
     };
 

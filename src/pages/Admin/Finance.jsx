@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useData } from '../../context/DataContext';
+import { useData } from '../../hooks/useData';
 import { Plus, X, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
 import { format } from 'date-fns';
 

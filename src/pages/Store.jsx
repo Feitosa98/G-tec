@@ -3,27 +3,24 @@ import Header from '../components/Header';
 import Hero from '../components/Hero';
 import ProductCard from '../components/ProductCard';
 import CartSidebar from '../components/CartSidebar';
-import LoadingSpinner from '../components/LoadingSpinner';
-import { useData } from '../context/DataContext';
-import { useAuth } from '../context/AuthContext';
+import { useData } from '../hooks/useData';
+import { useAuth } from '../hooks/useAuth';
 import { Filter } from 'lucide-react';
 import { showToast } from '../utils/toast';
 import GoogleReviews from '../components/GoogleReviews';
 
 const Store = () => {
-    const { products, registerSale, cart, addToCart: contextAddToCart, removeFromCart: contextRemoveFromCart, clearCart } = useData();
+    const { products, registerSale, cart, addToCart: contextAddToCart, removeFromCart: contextRemoveFromCart, clearCart, tenant } = useData();
     const { user } = useAuth();
     const [isCartOpen, setIsCartOpen] = useState(false);
-    const [loading, setLoading] = useState(false);
 
     // Filters
     const [selectedDept, setSelectedDept] = useState('Todos');
     const [selectedBrand, setSelectedBrand] = useState('Todas');
-    const [showFilters, setShowFilters] = useState(false); // Mobile toggle
     const [searchTerm, setSearchTerm] = useState('');
 
     // Advanced Filters
-    const [priceRange, setPriceRange] = useState({ min: 0, max: 50000 });
+    const priceRange = { min: 0, max: 50000 };
     const [showOnSale, setShowOnSale] = useState(false);
     const [sortBy, setSortBy] = useState('default'); // default, price-asc, price-desc, name
 
@@ -37,16 +34,7 @@ const Store = () => {
         }
     }, [searchTerm]);
 
-    // Simulate network delay for filtering
-    useEffect(() => {
-        setLoading(true);
-        const timer = setTimeout(() => {
-            setLoading(false);
-        }, 500);
-        return () => clearTimeout(timer);
-    }, [selectedDept, selectedBrand, searchTerm]);
-
-    const toggleCart = () => setIsCartOpen(!isCartOpen);
+    const toggleCart = () => setIsCartOpen(currentValue => !currentValue);
 
     const addToCart = (product) => {
         contextAddToCart(product);
@@ -127,8 +115,7 @@ const Store = () => {
                 <aside className="filters" style={{
                     width: '250px',
                     minWidth: '250px',
-                    display: 'none',
-                    '@media (min-width: 768px)': { display: 'block' } // Would need real CSS for media queries, hacking execution for now
+                    display: 'none'
                 }}>
                     <div style={{ position: 'sticky', top: '100px', background: 'var(--color-bg-card)', padding: '1.5rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.05)' }}>
                         <h3 style={{ fontFamily: 'var(--font-display)', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -314,18 +301,7 @@ const Store = () => {
             }
           `}</style>
 
-                    {/* Hack to force display sidebar on desktop since inline media queries don't work */}
-                    <style>{`
-            @media (min-width: 768px) {
-              .filters { display: block !important; }
-            }
-          `}</style>
-
-                    {loading ? (
-                        <div style={{ padding: '6rem', display: 'flex', justifyContent: 'center' }}>
-                            <LoadingSpinner size={60} color="var(--color-primary)" />
-                        </div>
-                    ) : filteredProducts.length > 0 ? (
+                    {filteredProducts.length > 0 ? (
                         <div className="products-grid" style={{
                             display: 'grid',
                             gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
@@ -364,7 +340,7 @@ const Store = () => {
                 }}>
                     {/* Brand Section */}
                     <div>
-                        <img src="/logo.png" alt="GTEC" style={{ height: '50px', marginBottom: '1rem' }} />
+                        <img src={tenant.logoUrl} alt={tenant.businessName} style={{ height: '50px', maxWidth: '180px', objectFit: 'contain', marginBottom: '1rem' }} />
                         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', lineHeight: '1.6', marginBottom: '1rem' }}>
                             Hardware de alta performance para gamers e profissionais. Qualidade e tecnologia de ponta.
                         </p>
@@ -407,7 +383,7 @@ const Store = () => {
                                     <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z" />
                                 </svg>
                             </a>
-                            <a href="https://wa.me/5592992800023?text=Ol%C3%A1%2C%20vim%20pelo%20site%20da%20GTEC%20Inform%C3%A1tica!" target="_blank" rel="noopener noreferrer" style={{
+                            <a href={`https://wa.me/${tenant.whatsapp}?text=${encodeURIComponent(`Olá, vim pelo site da ${tenant.businessName}!`)}`} target="_blank" rel="noopener noreferrer" style={{
                                 width: '36px',
                                 height: '36px',
                                 borderRadius: '50%',
@@ -473,7 +449,7 @@ const Store = () => {
                 }}>
                     <div className="container">
                         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                            &copy; {new Date().getFullYear()} GTEC Informática. Todos os direitos reservados.
+                            &copy; {new Date().getFullYear()} {tenant.businessName}. Todos os direitos reservados.
                         </p>
                     </div>
                 </div>
@@ -481,7 +457,7 @@ const Store = () => {
 
             {/* Floating WhatsApp Button */}
             <a
-                href="https://wa.me/5592992800023?text=Ol%C3%A1%2C%20vim%20pelo%20site%20da%20GTEC%20Inform%C3%A1tica!"
+                href={`https://wa.me/${tenant.whatsapp}?text=${encodeURIComponent(`Olá, vim pelo site da ${tenant.businessName}!`)}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{

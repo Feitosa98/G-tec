@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { useData } from '../context/DataContext';
+import { useData } from '../hooks/useData';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, CreditCard, QrCode, Truck, CheckCircle, MapPin, User, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, CreditCard, QrCode, Truck, CheckCircle, MapPin, User, ShieldCheck, CalendarClock } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const Checkout = () => {
@@ -18,6 +18,15 @@ const Checkout = () => {
     });
 
     const [paymentMethod, setPaymentMethod] = useState('credit_card');
+    const [installmentCount, setInstallmentCount] = useState(2);
+    const [firstDueDate, setFirstDueDate] = useState(() => {
+        const date = new Date();
+        date.setDate(date.getDate() + 30);
+        return date.toISOString().split('T')[0];
+    });
+
+    const orderTotal = paymentMethod === 'pix' ? Number((cartTotal * 0.95).toFixed(2)) : cartTotal;
+    const installmentValue = Number((orderTotal / installmentCount).toFixed(2));
 
     const handleInputChange = (e) => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -57,11 +66,18 @@ const Checkout = () => {
         setTimeout(() => {
             const order = {
                 items: cart,
-                total: cartTotal,
+                total: orderTotal,
                 userEmail: formData.email,
                 customerName: formData.name,
+                customerDocument: formData.doc,
+                customerPhone: formData.phone,
                 address: `${formData.street}, ${formData.number} - ${formData.city}/${formData.state}`,
-                paymentMethod: paymentMethod === 'pix' ? 'PIX' : 'Cartão de Crédito',
+                paymentMethod: paymentMethod === 'pix'
+                    ? 'PIX'
+                    : paymentMethod === 'terms' ? 'Cobrança a prazo' : 'Cartão de Crédito',
+                paymentTerms: paymentMethod === 'terms'
+                    ? { type: 'terms', installments: installmentCount, firstDueDate }
+                    : { type: 'cash', installments: 1 },
                 status: 'Pendente',
                 date: new Date().toISOString()
             };
@@ -166,7 +182,7 @@ const Checkout = () => {
                     <div className="card">
                         <h3 style={{ marginBottom: '1.5rem' }}>Método de Pagamento</h3>
 
-                        <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
+                        <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
                             <button
                                 onClick={() => setPaymentMethod('credit_card')}
                                 style={{
@@ -188,6 +204,17 @@ const Checkout = () => {
                                 }}
                             >
                                 <QrCode size={20} /> PIX (5% OFF)
+                            </button>
+                            <button
+                                onClick={() => setPaymentMethod('terms')}
+                                style={{
+                                    flex: 1, minWidth: '180px', padding: '1rem', borderRadius: '8px',
+                                    background: paymentMethod === 'terms' ? 'var(--color-accent)' : 'rgba(255,255,255,0.05)',
+                                    border: 'none', color: paymentMethod === 'terms' ? 'black' : 'white', fontWeight: 'bold', cursor: 'pointer',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px'
+                                }}
+                            >
+                                <CalendarClock size={20} /> Cobrança a Prazo
                             </button>
                         </div>
 
@@ -229,11 +256,37 @@ const Checkout = () => {
                                     </div>
                                 </div>
                             </div>
-                        ) : (
+                        ) : paymentMethod === 'pix' ? (
                             <div style={{ textAlign: 'center', padding: '2rem', background: 'white', borderRadius: '8px' }}>
                                 <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=GTEC-PIX-PAYMENT-MOCK`} alt="QR Code Pix" />
                                 <p style={{ color: 'black', fontWeight: 'bold', marginTop: '1rem' }}>Escaneie para pagar</p>
                                 <p style={{ color: '#666', fontSize: '0.9rem' }}>Aprovação imediata</p>
+                            </div>
+                        ) : (
+                            <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.04)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                                <h4 style={{ marginBottom: '1rem', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <CalendarClock size={20} color="var(--color-accent)" /> Condições da cobrança
+                                </h4>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
+                                    <label>
+                                        <span style={fieldLabelStyle}>Quantidade de parcelas</span>
+                                        <select value={installmentCount} onChange={(event) => setInstallmentCount(Number(event.target.value))} style={inputStyle}>
+                                            {[1, 2, 3, 4, 5, 6, 10, 12].map(count => (
+                                                <option key={count} value={count} style={{ background: '#12182b' }}>{count}x</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                    <label>
+                                        <span style={fieldLabelStyle}>Primeiro vencimento</span>
+                                        <input type="date" value={firstDueDate} min={new Date().toISOString().split('T')[0]} onChange={(event) => setFirstDueDate(event.target.value)} style={inputStyle} />
+                                    </label>
+                                </div>
+                                <div style={{ marginTop: '1.25rem', padding: '1rem', borderRadius: '8px', background: 'rgba(212,160,36,0.1)', color: 'var(--color-accent)' }}>
+                                    {installmentCount} parcela{installmentCount > 1 ? 's' : ''} de aproximadamente <strong>R$ {installmentValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
+                                </div>
+                                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem', marginTop: '1rem' }}>
+                                    O pedido será criado com parcelas pendentes no painel de cobranças.
+                                </p>
                             </div>
                         )}
                     </div>
@@ -244,8 +297,8 @@ const Checkout = () => {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '1.5rem' }}>
                             {cart.map(item => (
                                 <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
-                                    <span style={{ color: 'var(--color-text-muted)' }}>{item.qty}x {item.name}</span>
-                                    <span>R$ {(item.price * item.qty).toLocaleString('pt-BR')}</span>
+                                    <span style={{ color: 'var(--color-text-muted)' }}>{item.quantity || 1}x {item.name}</span>
+                                    <span>R$ {(item.price * (item.quantity || 1)).toLocaleString('pt-BR')}</span>
                                 </div>
                             ))}
                         </div>
@@ -266,12 +319,12 @@ const Checkout = () => {
                             )}
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.2rem', fontWeight: 'bold', marginTop: '1rem', color: 'var(--color-accent)' }}>
                                 <span>Total</span>
-                                <span>R$ {(paymentMethod === 'pix' ? cartTotal * 0.95 : cartTotal).toLocaleString('pt-BR')}</span>
+                                <span>R$ {orderTotal.toLocaleString('pt-BR')}</span>
                             </div>
                         </div>
                         <button
                             onClick={handlePlaceOrder}
-                            disabled={loading || (paymentMethod === 'credit_card' && !formData.cardNumber)}
+                            disabled={loading || (paymentMethod === 'credit_card' && !formData.cardNumber) || (paymentMethod === 'terms' && !firstDueDate)}
                             className="btn-primary"
                             style={{ width: '100%', marginTop: '2rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px' }}
                         >
@@ -309,6 +362,13 @@ const inputStyle = {
     color: 'white',
     outline: 'none',
     width: '100%'
+};
+
+const fieldLabelStyle = {
+    display: 'block',
+    color: 'var(--color-text-muted)',
+    fontSize: '0.85rem',
+    marginBottom: '0.5rem'
 };
 
 export default Checkout;

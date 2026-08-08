@@ -1,0 +1,11 @@
+.git
+.github
+.agents
+.codex
+node_modules
+dist
+*.log
+.env*
+Dockerfile*
+docker-compose*.yml
+DEPLOY_HOSTINGER.md

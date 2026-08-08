@@ -1,18 +1,16 @@
 import React, { useState } from 'react';
 import { ShoppingCart, Search, Menu, User, LogOut, XCircle } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import { useData } from '../context/DataContext';
+import { useAuth } from '../hooks/useAuth';
+import { useData } from '../hooks/useData';
 import { Link, useNavigate } from 'react-router-dom';
 
 const Header = ({ cartCount, toggleCart, searchTerm = '', setSearchTerm = () => { } }) => {
     const { user, logout } = useAuth();
-    const { getCartItemCount } = useData();
+    const { tenant } = useData();
     const navigate = useNavigate();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-    const actualCartCount = getCartItemCount();
-
-    const toggleMenu = () => setIsMenuOpen(!isMenuOpen);
+    const toggleMenu = () => setIsMenuOpen(currentValue => !currentValue);
     const closeMenu = () => setIsMenuOpen(false);
 
     // Navigation Links Data
@@ -52,7 +50,7 @@ const Header = ({ cartCount, toggleCart, searchTerm = '', setSearchTerm = () => 
                     </button>
 
                     <Link to="/" className="logo" onClick={closeMenu}>
-                        <img src="/logo.png" alt="GTEC Informática" style={{ height: '50px', objectFit: 'contain' }} />
+                        <img src={tenant.logoUrl} alt={tenant.businessName} style={{ height: '50px', maxWidth: '170px', objectFit: 'contain' }} />
                     </Link>
 
                     {/* Desktop Nav Links */}

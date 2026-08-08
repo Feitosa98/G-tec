@@ -1,6 +1,6 @@
 import React from 'react';
-import { useAuth } from '../context/AuthContext';
-import { useData } from '../context/DataContext';
+import { useAuth } from '../hooks/useAuth';
+import { useData } from '../hooks/useData';
 import { Navigate, Link } from 'react-router-dom';
 import Header from '../components/Header';
 import { Package, Calendar, DollarSign } from 'lucide-react';

@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: .
+      args:
+        VITE_BASE_PATH: /
+    restart: unless-stopped
+    ports:
+      - "${GTEC_PORT:-8080}:80"
+    security_opt:
+      - no-new-privileges:true

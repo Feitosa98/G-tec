@@ -1,21 +1,17 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import { useState } from 'react';
+import { AuthContext } from './auth-context';
 
-const AuthContext = createContext();
-
-export const useAuth = () => useContext(AuthContext);
+const readSession = () => {
+    try {
+        return JSON.parse(localStorage.getItem('gtec-session'));
+    } catch {
+        localStorage.removeItem('gtec-session');
+        return null;
+    }
+};
 
 export const AuthProvider = ({ children }) => {
-    const [user, setUser] = useState(null); // { name, email, role: 'admin' | 'customer' }
-    const [loading, setLoading] = useState(true);
-
-    // Load session on mount
-    useEffect(() => {
-        const session = localStorage.getItem('gtec-session');
-        if (session) {
-            setUser(JSON.parse(session));
-        }
-        setLoading(false);
-    }, []);
+    const [user, setUser] = useState(readSession); // { name, email, role: 'admin' | 'customer' }
 
     // Login Logic
     const login = (email, password) => {
@@ -67,8 +63,8 @@ export const AuthProvider = ({ children }) => {
     };
 
     return (
-        <AuthContext.Provider value={{ user, login, register, logout, loading }}>
-            {!loading && children}
+        <AuthContext.Provider value={{ user, login, register, logout, loading: false }}>
+            {children}
         </AuthContext.Provider>
     );
 };

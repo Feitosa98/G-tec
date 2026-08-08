@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useData } from '../../context/DataContext';
+import { useData } from '../../hooks/useData';
 import { Package, Truck, CheckCircle, XCircle, Search, Eye, FileText } from 'lucide-react';
 import { format } from 'date-fns';
 import { showToast } from '../../utils/toast';
@@ -7,7 +7,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 const OrderManager = () => {
-    const { sales, updateOrderStatus } = useData();
+    const { sales, updateOrderStatus, tenant } = useData();
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedOrder, setSelectedOrder] = useState(null);
 
@@ -57,7 +57,7 @@ const OrderManager = () => {
                 });
             }
 
-            const logo = await loadImage('/logo.png');
+            const logo = await loadImage(tenant.logoUrl);
 
             // --- Colors & Fonts ---
             const colorPrimary = [15, 23, 42];   // Navy Blue
@@ -84,13 +84,13 @@ const OrderManager = () => {
             doc.setTextColor(255, 255, 255);
             doc.setFontSize(24);
             doc.setFont('helvetica', 'bold');
-            doc.text('GTEC Informática', 50, 18);
+            doc.text(tenant.businessName, 50, 18);
 
             doc.setFontSize(10);
             doc.setFont('helvetica', 'normal');
-            doc.text('CNPJ: 45.123.789/0001-90', 50, 25);
-            doc.text('R. Rio Mucuim, 45 - São José Operário, Manaus - AM, 69086-120', 50, 30);
-            doc.text('contato@gtecinformatica.com.br | (92) 9 9280-0023', 50, 35);
+            doc.text(`Documento: ${tenant.document || '-'}`, 50, 25);
+            doc.text(tenant.address || '-', 50, 30);
+            doc.text(`${tenant.email || '-'} | ${tenant.whatsapp || '-'}`, 50, 35);
 
             // Receipt Title (Right)
             doc.setFontSize(28);
@@ -114,8 +114,8 @@ const OrderManager = () => {
             doc.setFontSize(10);
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(0, 0, 0);
-            doc.text(order.userEmail, 15, startY + 6);
-            doc.text('Cliente Consumidor', 15, startY + 11);
+            doc.text(order.customerName || 'Cliente consumidor', 15, startY + 6);
+            doc.text(order.userEmail || '-', 15, startY + 11);
 
             // Right: Payment Details
             doc.setTextColor(...colorPrimary);
@@ -134,15 +134,15 @@ const OrderManager = () => {
             doc.text(order.status || 'Confirmado', 195, startY + 11, { align: 'right' });
 
             doc.text(`Método Pagamento:`, 120, startY + 16);
-            doc.text('Cartão de Crédito', 195, startY + 16, { align: 'right' }); // Mock payment method
+            doc.text(order.paymentMethod || 'Não informado', 195, startY + 16, { align: 'right' });
 
 
             // --- Items Table ---
             const tableBody = order.items.map(item => [
                 item.name,
-                "1", // Quantity assumed 1
+                String(item.quantity || 1),
                 `R$ ${item.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
-                `R$ ${item.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                `R$ ${(item.price * (item.quantity || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
             ]);
 
             autoTable(doc, {
@@ -178,7 +178,6 @@ const OrderManager = () => {
 
             // --- Total Summary Box ---
             const finalY = doc.lastAutoTable.finalY + 10;
-            const boxWidth = 80;
             const boxX = 115; // Align to right side roughly
 
             // Total Amount Large
@@ -198,7 +197,7 @@ const OrderManager = () => {
 
             doc.setFontSize(9);
             doc.setTextColor(...colorGray);
-            doc.text('Obrigado por comprar com a GTEC Informática!', 105, pageHeight - 15, { align: 'center' });
+            doc.text(`Obrigado por comprar com a ${tenant.businessName}!`, 105, pageHeight - 15, { align: 'center' });
             doc.text('Este documento é um comprovante de venda gerado eletronicamente.', 105, pageHeight - 10, { align: 'center' });
 
             doc.save(`recibo-gtec-${order.id}.pdf`);
@@ -235,6 +234,7 @@ const OrderManager = () => {
                             <th style={thStyle}>Data</th>
                             <th style={thStyle}>Cliente</th>
                             <th style={thStyle}>Total</th>
+                            <th style={thStyle}>Pagamento</th>
                             <th style={thStyle}>Status</th>
                             <th style={thStyle}>Ações</th>
                         </tr>
@@ -246,6 +246,12 @@ const OrderManager = () => {
                                 <td style={tdStyle}>{format(new Date(sale.date), 'dd/MM/yyyy HH:mm')}</td>
                                 <td style={tdStyle}>{sale.userEmail}</td>
                                 <td style={tdStyle}>R$ {sale.total.toLocaleString('pt-BR')}</td>
+                                <td style={tdStyle}>
+                                    <span style={{ display: 'block', fontWeight: 'bold' }}>{sale.paymentMethod || 'Não informado'}</span>
+                                    <span style={{ color: sale.paymentStatus === 'Pendente' ? 'var(--color-warning)' : 'var(--color-success)', fontSize: '0.8rem' }}>
+                                        {sale.paymentStatus || 'Pago'}
+                                    </span>
+                                </td>
                                 <td style={tdStyle}>
                                     <div style={{
                                         display: 'inline-flex',
@@ -352,7 +358,25 @@ const OrderManager = () => {
                                 <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>Total</p>
                                 <p style={{ color: 'var(--color-success)', fontWeight: 'bold' }}>R$ {selectedOrder.total.toLocaleString('pt-BR')}</p>
                             </div>
+                            <div>
+                                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>Pagamento</p>
+                                <p>{selectedOrder.paymentMethod || 'Não informado'} · {selectedOrder.paymentStatus || 'Pago'}</p>
+                            </div>
                         </div>
+
+                        {selectedOrder.installments?.length > 0 && (
+                            <>
+                                <h3 style={{ marginBottom: '0.8rem', fontSize: '1.1rem' }}>Parcelas</h3>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.6rem', marginBottom: '1.5rem' }}>
+                                    {selectedOrder.installments.map(installment => (
+                                        <div key={installment.id} style={{ padding: '0.7rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px' }}>
+                                            <strong>{installment.number}/{selectedOrder.installments.length} · R$ {installment.value.toLocaleString('pt-BR')}</strong>
+                                            <span style={{ display: 'block', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>{format(new Date(installment.dueDate), 'dd/MM/yyyy')} · {installment.status}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
 
                         <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Itens do Pedido</h3>
                         <ul style={{ marginBottom: '2rem' }}>

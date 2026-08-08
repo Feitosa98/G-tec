@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Trash2, Plus, Minus } from 'lucide-react';
-import { useData } from '../context/DataContext';
+import { useData } from '../hooks/useData';
 
 const CartSidebar = ({ isOpen, closeCart }) => {
     const navigate = useNavigate();

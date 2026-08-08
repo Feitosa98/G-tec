@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useData } from '../../context/DataContext';
+import { useData } from '../../hooks/useData';
 import { Plus, Trash2, Edit, Upload, Image as ImageIcon } from 'lucide-react';
 import { showToast } from '../../utils/toast';
 import { useNavigate } from 'react-router-dom';
@@ -27,7 +27,6 @@ const ProductManager = () => {
         setTimeout(() => {
             // In a real app, this would be the URL returned from backend/S3
             // Here we use a high-quality placehold.co or unsplash url based on category
-            const randomId = Math.floor(Math.random() * 1000);
             const fakeUrl = `https://images.unsplash.com/photo-1593640408182-31c70c8268f5?q=80&w=1000&auto=format&fit=crop`; // Keep safe consistent image for demo
 
             setFormData(prev => ({ ...prev, image: fakeUrl }));

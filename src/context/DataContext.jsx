@@ -1,56 +1,77 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { products as initialProducts } from '../data/products';
+import { DataContext } from './data-context';
 
-const DataContext = createContext();
+const defaultTenant = {
+    businessName: 'GTEC Informática',
+    shortName: 'GTEC',
+    logoUrl: `${import.meta.env.BASE_URL}logo.png`,
+    primaryColor: '#0052cc',
+    accentColor: '#d4a024',
+    backgroundColor: '#0a0e1a',
+    cardColor: '#12182b',
+    storeSlug: 'gtec-informatica',
+    customDomain: '',
+    whatsapp: '5592992800023',
+    email: 'contato@gtecinformatica.com.br',
+    document: '45.123.789/0001-90',
+    address: 'Manaus - AM'
+};
 
-export const useData = () => useContext(DataContext);
+const readStoredValue = (key, fallback) => {
+    try {
+        const storedValue = localStorage.getItem(key);
+        return storedValue ? JSON.parse(storedValue) : fallback;
+    } catch {
+        localStorage.removeItem(key);
+        return fallback;
+    }
+};
 
 export const DataProvider = ({ children }) => {
     // --- STATE ---
-    const [products, setProducts] = useState([]);
-    const [sales, setSales] = useState([]);
-    const [expenses, setExpenses] = useState([]); // Fixed costs like Rent, Energy
-    const [cart, setCart] = useState([]);
-    const [isInitialized, setIsInitialized] = useState(false);
-
-    // --- INIT ---
-    useEffect(() => {
-        // Load data from LocalStorage or use defaults
-        const storedProducts = localStorage.getItem('gtec-products-v5'); // Changed key to force refresh
-        const storedSales = localStorage.getItem('gtec-sales-v2');
-        const storedExpenses = localStorage.getItem('gtec-expenses-v2');
-        const storedCart = localStorage.getItem('gtec-cart-v2');
-
-        if (storedProducts) {
-            setProducts(JSON.parse(storedProducts));
-        } else {
-            setProducts(initialProducts);
-            localStorage.setItem('gtec-products-v5', JSON.stringify(initialProducts));
-        }
-
-        if (storedSales) setSales(JSON.parse(storedSales));
-        if (storedExpenses) setExpenses(JSON.parse(storedExpenses));
-        if (storedCart) setCart(JSON.parse(storedCart));
-
-        setIsInitialized(true);
-    }, []);
+    const [products, setProducts] = useState(() => readStoredValue('gtec-products-v5', initialProducts));
+    const [sales, setSales] = useState(() => readStoredValue('gtec-sales-v2', []));
+    const [expenses, setExpenses] = useState(() => readStoredValue('gtec-expenses-v2', []));
+    const [cart, setCart] = useState(() => readStoredValue('gtec-cart-v2', []));
+    const [tenant, setTenant] = useState(() => ({
+        ...defaultTenant,
+        ...readStoredValue('gtec-tenant-v1', {})
+    }));
 
     // --- PERSISTENCE ---
     useEffect(() => {
-        if (isInitialized) localStorage.setItem('gtec-products-v5', JSON.stringify(products));
-    }, [products, isInitialized]);
+        localStorage.setItem('gtec-products-v5', JSON.stringify(products));
+    }, [products]);
 
     useEffect(() => {
-        if (isInitialized) localStorage.setItem('gtec-sales-v2', JSON.stringify(sales));
-    }, [sales, isInitialized]);
+        localStorage.setItem('gtec-sales-v2', JSON.stringify(sales));
+    }, [sales]);
 
     useEffect(() => {
-        if (isInitialized) localStorage.setItem('gtec-expenses-v2', JSON.stringify(expenses));
-    }, [expenses, isInitialized]);
+        localStorage.setItem('gtec-expenses-v2', JSON.stringify(expenses));
+    }, [expenses]);
 
     useEffect(() => {
-        if (isInitialized) localStorage.setItem('gtec-cart-v2', JSON.stringify(cart));
-    }, [cart, isInitialized]);
+        localStorage.setItem('gtec-cart-v2', JSON.stringify(cart));
+    }, [cart]);
+
+    useEffect(() => {
+        localStorage.setItem('gtec-tenant-v1', JSON.stringify(tenant));
+
+        const root = document.documentElement;
+        root.style.setProperty('--color-primary', tenant.primaryColor);
+        root.style.setProperty('--color-primary-dark', tenant.primaryColor);
+        root.style.setProperty('--color-accent', tenant.accentColor);
+        root.style.setProperty('--color-accent-light', tenant.accentColor);
+        root.style.setProperty('--color-bg-dark', tenant.backgroundColor);
+        root.style.setProperty('--color-bg-darker', tenant.backgroundColor);
+        root.style.setProperty('--color-bg-card', tenant.cardColor);
+        root.style.setProperty('--gradient-primary', `linear-gradient(135deg, ${tenant.primaryColor} 0%, ${tenant.backgroundColor} 100%)`);
+        root.style.setProperty('--gradient-accent', `linear-gradient(135deg, ${tenant.accentColor} 0%, ${tenant.primaryColor} 100%)`);
+        root.style.setProperty('--gradient-card', `linear-gradient(145deg, ${tenant.cardColor} 0%, ${tenant.backgroundColor} 100%)`);
+        document.title = tenant.businessName;
+    }, [tenant]);
 
     // --- ACTIONS ---
 
@@ -86,18 +107,69 @@ export const DataProvider = ({ children }) => {
             };
         } else {
             // Full order object from Checkout
+            const installmentCount = Math.max(1, Number(orderDataOrItems.paymentTerms?.installments) || 1);
+            const firstDueDate = orderDataOrItems.paymentTerms?.firstDueDate
+                ? new Date(`${orderDataOrItems.paymentTerms.firstDueDate}T12:00:00`)
+                : new Date();
+            const baseInstallmentValue = Math.floor((Number(orderDataOrItems.total) / installmentCount) * 100) / 100;
+            const installments = orderDataOrItems.paymentTerms?.type === 'terms'
+                ? Array.from({ length: installmentCount }, (_, index) => {
+                    const dueDate = new Date(firstDueDate);
+                    dueDate.setMonth(firstDueDate.getMonth() + index);
+                    const isLast = index === installmentCount - 1;
+                    const value = isLast
+                        ? Number((Number(orderDataOrItems.total) - (baseInstallmentValue * index)).toFixed(2))
+                        : baseInstallmentValue;
+
+                    return {
+                        id: crypto.randomUUID(),
+                        number: index + 1,
+                        dueDate: dueDate.toISOString(),
+                        value,
+                        status: 'Pendente',
+                        paidAt: null
+                    };
+                })
+                : [];
+
             newSale = {
                 ...orderDataOrItems,
                 id: crypto.randomUUID(), // Always generate secure ID
                 type: 'sale',
+                installments,
+                paymentStatus: installments.length > 0 ? 'Pendente' : 'Pago',
                 totalCost: orderDataOrItems.items?.reduce((acc, item) => acc + (item.costPrice || 0), 0) || 0
             };
         }
-        setSales([...sales, newSale]);
+        setSales(currentSales => [...currentSales, newSale]);
     };
 
     const updateOrderStatus = (saleId, newStatus) => {
-        setSales(sales.map(sale => sale.id === saleId ? { ...sale, status: newStatus } : sale));
+        setSales(currentSales => currentSales.map(sale => sale.id === saleId ? { ...sale, status: newStatus } : sale));
+    };
+
+    const markInstallmentPaid = (saleId, installmentId) => {
+        setSales(currentSales => currentSales.map(sale => {
+            if (sale.id !== saleId) return sale;
+
+            const installments = (sale.installments || []).map(installment =>
+                installment.id === installmentId
+                    ? { ...installment, status: 'Pago', paidAt: new Date().toISOString() }
+                    : installment
+            );
+
+            return {
+                ...sale,
+                installments,
+                paymentStatus: installments.length > 0 && installments.every(installment => installment.status === 'Pago')
+                    ? 'Pago'
+                    : 'Pendente'
+            };
+        }));
+    };
+
+    const updateTenant = (settings) => {
+        setTenant(currentTenant => ({ ...currentTenant, ...settings }));
     };
 
     // Expense Actions
@@ -247,6 +319,7 @@ export const DataProvider = ({ children }) => {
             removeExpense,
             getFinancialSummary,
             updateOrderStatus,
+            markInstallmentPaid,
             cart,
             addToCart,
             updateCartItemQuantity,
@@ -254,6 +327,8 @@ export const DataProvider = ({ children }) => {
             clearCart,
             getCartItemCount,
             generateMockData,
+            tenant,
+            updateTenant,
             cartTotal: cart.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0)
         }}>
             {children}

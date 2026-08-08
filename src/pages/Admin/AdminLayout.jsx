@@ -1,10 +1,12 @@
 import React from 'react';
 import { Outlet, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Package, DollarSign, LogOut, Monitor } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
+import { LayoutDashboard, Package, DollarSign, LogOut, Monitor, CalendarClock, Palette } from 'lucide-react';
+import { useAuth } from '../../hooks/useAuth';
+import { useData } from '../../hooks/useData';
 
 const AdminLayout = () => {
     const { user, logout } = useAuth();
+    const { tenant } = useData();
     const location = useLocation();
     const navigate = useNavigate();
 
@@ -16,8 +18,10 @@ const AdminLayout = () => {
     const navItems = [
         { path: '/admin', label: 'Dashboard', icon: LayoutDashboard },
         { path: '/admin/orders', label: 'Pedidos', icon: Package }, // Updated Order item
+        { path: '/admin/receivables', label: 'Cobranças', icon: CalendarClock },
         { path: '/admin/products', label: 'Produtos', icon: Monitor }, // Swapped icon for variety
         { path: '/admin/finance', label: 'Financeiro', icon: DollarSign },
+        { path: '/admin/settings', label: 'Personalizar', icon: Palette },
     ];
 
     const handleLogout = () => {
@@ -36,8 +40,8 @@ const AdminLayout = () => {
                 flexDirection: 'column'
             }}>
                 <div style={{ padding: '2rem', display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--color-accent)' }}>
-                    <Monitor size={28} />
-                    <span style={{ fontSize: '1.5rem', fontFamily: 'var(--font-display)', fontWeight: 'bold' }}>GTEC</span>
+                    {tenant.logoUrl ? <img src={tenant.logoUrl} alt={tenant.businessName} style={{ width: '32px', height: '32px', objectFit: 'contain' }} /> : <Monitor size={28} />}
+                    <span style={{ fontSize: '1.2rem', fontFamily: 'var(--font-display)', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tenant.shortName}</span>
                 </div>
 
                 <nav style={{ flex: 1, padding: '1rem' }}>

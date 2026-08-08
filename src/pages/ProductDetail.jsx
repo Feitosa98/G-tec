@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useData } from '../context/DataContext';
-import { useAuth } from '../context/AuthContext';
+import { useData } from '../hooks/useData';
 import Header from '../components/Header';
 import { ArrowLeft, ShoppingCart, Cpu, HardDrive, Zap, ChevronLeft, ChevronRight, Share2, Copy, MessageCircle } from 'lucide-react';
 import { showToast } from '../utils/toast';
@@ -11,7 +10,6 @@ const ProductDetail = () => {
     const { id } = useParams();
     const navigate = useNavigate();
     const { products, addToCart: contextAddToCart } = useData();
-    // const { user } = useAuth(); // Unused
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
     const [isAutoPlaying, setIsAutoPlaying] = useState(true);
     const [loading, setLoading] = useState(true);
