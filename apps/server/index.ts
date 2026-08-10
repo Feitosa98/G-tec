@@ -26,7 +26,7 @@ import {
     upsertStoreRecord
 } from './database.js';
 import { createToken, verifyToken } from './auth.js';
-import { createMPPreference, getMPPayment } from './services/mercadopago.js';
+import { createMPPixPayment, createMPPreference, getMPPayment } from './services/mercadopago.js';
 
 const app = express();
 // A aplicação roda atrás do Traefik na VPS. Isso preserva o IP real do
@@ -512,6 +512,71 @@ app.post('/api/store/:slug/mercadopago/preference', requireStoreAdmin, async (re
 });
 
 // Webhook do Mercado Pago (notificação de pagamento)
+app.post('/api/store/:slug/mercadopago/pix', requireStoreAdmin, async (req, res) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const records = await listStoreRecords(slug, 'integrations');
+        const mpConfig = (records || []).find((record: any) => record.id === 'mercadopago');
+        if (!mpConfig?.accessToken) {
+            return res.status(400).json({ message: 'Mercado Pago não configurado.' });
+        }
+
+        const validation = z.object({
+            amount: z.coerce.number().positive(),
+            description: z.string().trim().min(2).max(200),
+            payerEmail: z.string().trim().email().max(254),
+            payerName: z.string().trim().max(120).optional(),
+            externalReference: z.string().trim().max(120).optional(),
+            referenceType: z.enum(['service_order', 'installment', 'test']).optional(),
+            saleId: z.string().trim().max(120).optional(),
+        }).safeParse(req.body);
+        if (!validation.success) {
+            return res.status(400).json({ message: 'Informe valor, descrição e e-mail válido do pagador.' });
+        }
+
+        const data = validation.data;
+        const externalReference = data.externalReference || `pix-test-${crypto.randomUUID()}`;
+        const notificationUrl = mpConfig.autoReconciliationEnabled && mpConfig.webhookUrl
+            ? mpConfig.webhookUrl
+            : undefined;
+        const result = await createMPPixPayment({
+            accessToken: mpConfig.accessToken,
+            amount: data.amount,
+            description: data.description,
+            payerEmail: data.payerEmail,
+            payerName: data.payerName,
+            externalReference,
+            notificationUrl,
+            idempotencyKey: crypto.randomUUID(),
+        });
+
+        if (!result.id || !result.qrCode || !result.qrCodeBase64) {
+            return res.status(502).json({ message: 'O Mercado Pago não retornou os dados do QR Code PIX.' });
+        }
+
+        await upsertStoreRecord(slug, 'payment_transactions', {
+            id: result.id,
+            paymentId: result.id,
+            externalReference,
+            referenceType: data.referenceType || 'test',
+            saleId: data.saleId,
+            expectedAmount: data.amount,
+            status: result.status,
+            reconciliationStatus: 'waiting',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        });
+
+        return res.json({ ...result, externalReference, autoReconciliationEnabled: Boolean(notificationUrl) });
+    } catch (error: any) {
+        const message = String(error?.message || 'Erro ao gerar PIX');
+        if (message.toUpperCase().includes('UNAUTHORIZED')) {
+            return res.status(401).json({ message: 'Access Token recusado pelo Mercado Pago. Atualize a credencial de produção.' });
+        }
+        return res.status(500).json({ message });
+    }
+});
+
 app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);

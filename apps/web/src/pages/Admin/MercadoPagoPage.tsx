@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
-import { CreditCard, Key, Shield, CheckCircle, AlertCircle, Save, ExternalLink, Copy, Trash2, X, Link } from 'lucide-react';
+import { CreditCard, Key, Shield, CheckCircle, AlertCircle, Save, ExternalLink, Copy, Trash2, X, Link, QrCode } from 'lucide-react';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
 import toast from 'react-hot-toast';
 
 export default function MercadoPagoPage() {
     const { tenant } = useData();
-    const { generatePaymentLink, copyLinkToClipboard } = useMercadoPago();
+    const { generatePixPayment, copyLinkToClipboard } = useMercadoPago();
 
     const [accessToken, setAccessToken] = useState('');
     const [sandbox, setSandbox] = useState(true);
@@ -21,7 +21,8 @@ export default function MercadoPagoPage() {
     const [showTestModal, setShowTestModal] = useState(false);
     const [testAmount, setTestAmount] = useState('10.00');
     const [testDesc, setTestDesc] = useState('Produto Teste');
-    const [generatedLink, setGeneratedLink] = useState('');
+    const [testEmail, setTestEmail] = useState('');
+    const [generatedPix, setGeneratedPix] = useState<{ paymentId?: string; qrCode?: string; qrCodeBase64?: string; ticketUrl?: string } | null>(null);
     const [generatingTest, setGeneratingTest] = useState(false);
 
     const getToken = () => {
@@ -50,6 +51,10 @@ export default function MercadoPagoPage() {
         };
         loadConfig();
     }, [tenant]);
+
+    useEffect(() => {
+        if (tenant?.email) setTestEmail(current => current || tenant.email);
+    }, [tenant?.email]);
 
     const handleSave = async () => {
         if (!accessToken) {
@@ -81,14 +86,21 @@ export default function MercadoPagoPage() {
             toast.error('Informe um valor maior que zero.');
             return;
         }
+        if (!testEmail.trim()) {
+            toast.error('Informe o e-mail do pagador.');
+            return;
+        }
 
         setGeneratingTest(true);
-        setGeneratedLink('');
+        setGeneratedPix(null);
         try {
-            const result = await generatePaymentLink({
-                items: [{ title: testDesc.trim() || 'Produto Teste', quantity: 1, unit_price: amount }],
+            const result = await generatePixPayment({
+                amount,
+                description: testDesc.trim() || 'Produto Teste',
+                payerEmail: testEmail.trim(),
+                referenceType: 'test',
             });
-            if (result.link) setGeneratedLink(result.link);
+            if (result.success) setGeneratedPix(result);
         } finally {
             setGeneratingTest(false);
         }
@@ -260,17 +272,48 @@ export default function MercadoPagoPage() {
                             <input value={testAmount} onChange={e => setTestAmount(e.target.value)}
                                 className="w-full bg-slate-950/60 border border-slate-700 focus:border-blue-500 rounded-xl px-4 py-2.5 text-slate-100 outline-none text-sm" />
                         </div>
+                        <div className="col-span-2">
+                            <label className="text-xs text-slate-400 mb-1.5 block">E-mail do pagador</label>
+                            <input type="email" value={testEmail} onChange={e => setTestEmail(e.target.value)}
+                                placeholder="cliente@email.com"
+                                className="w-full bg-slate-950/60 border border-slate-700 focus:border-blue-500 rounded-xl px-4 py-2.5 text-slate-100 outline-none text-sm" />
+                        </div>
                     </div>
                     <button onClick={handleTestLink} disabled={generatingTest}
                         className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold rounded-xl transition-all flex items-center justify-center gap-2">
                         <Link className="w-4 h-4" />
-                        {generatingTest ? 'Gerando...' : 'Gerar Link de Teste'}
+                        {generatingTest ? 'Gerando QR Code...' : 'Gerar QR Code PIX'}
                     </button>
-                    {generatedLink && (
-                        <div className="flex items-center gap-2 p-3 bg-slate-800 rounded-xl border border-slate-700">
-                            <p className="text-blue-400 text-sm flex-1 truncate font-mono">{generatedLink}</p>
-                            <button onClick={() => copyLinkToClipboard(generatedLink)} className="p-1.5 text-slate-400 hover:text-white shrink-0"><Copy className="w-4 h-4" /></button>
-                            <a href={generatedLink} target="_blank" rel="noreferrer" className="p-1.5 text-slate-400 hover:text-white shrink-0"><ExternalLink className="w-4 h-4" /></a>
+                    {generatedPix?.qrCode && generatedPix.qrCodeBase64 && (
+                        <div className="grid gap-5 md:grid-cols-[220px_1fr] p-5 bg-slate-950/60 rounded-2xl border border-emerald-500/20">
+                            <div className="bg-white rounded-xl p-3 flex items-center justify-center">
+                                <img
+                                    src={`data:image/png;base64,${generatedPix.qrCodeBase64}`}
+                                    alt="QR Code PIX"
+                                    className="w-full max-w-[196px] aspect-square object-contain"
+                                />
+                            </div>
+                            <div className="min-w-0 space-y-3">
+                                <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                                    <QrCode className="w-5 h-5" /> PIX pronto para pagamento
+                                </div>
+                                <p className="text-xs text-slate-400">Escaneie o QR Code ou copie o código PIX abaixo.</p>
+                                <textarea readOnly value={generatedPix.qrCode}
+                                    className="w-full h-24 resize-none bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-slate-300 font-mono outline-none" />
+                                <div className="flex flex-wrap gap-2">
+                                    <button onClick={() => copyLinkToClipboard(generatedPix.qrCode!)}
+                                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium flex items-center gap-2">
+                                        <Copy className="w-4 h-4" /> Copiar PIX
+                                    </button>
+                                    {generatedPix.ticketUrl && (
+                                        <a href={generatedPix.ticketUrl} target="_blank" rel="noreferrer"
+                                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium flex items-center gap-2">
+                                            <ExternalLink className="w-4 h-4" /> Abrir pagamento
+                                        </a>
+                                    )}
+                                </div>
+                                {generatedPix.paymentId && <p className="text-[11px] text-slate-600">Pagamento #{generatedPix.paymentId}</p>}
+                            </div>
                         </div>
                     )}
                 </div>

@@ -23,6 +23,24 @@ interface GeneratePaymentLinkResult {
     success: boolean;
 }
 
+interface GeneratePixPaymentOptions {
+    amount: number;
+    description: string;
+    payerEmail: string;
+    payerName?: string;
+    externalReference?: string;
+    referenceType?: 'service_order' | 'installment' | 'test';
+    saleId?: string;
+}
+
+interface GeneratePixPaymentResult {
+    success: boolean;
+    paymentId?: string;
+    qrCode?: string;
+    qrCodeBase64?: string;
+    ticketUrl?: string;
+}
+
 /**
  * Hook para gerar links de pagamento via Mercado Pago
  */
@@ -87,6 +105,54 @@ export function useMercadoPago() {
         }
     };
 
+    const generatePixPayment = async (opts: GeneratePixPaymentOptions): Promise<GeneratePixPaymentResult> => {
+        if (!tenant?.storeSlug) {
+            showToast.error('Loja não identificada');
+            return { success: false };
+        }
+
+        const toastId = showToast.loading('Gerando QR Code PIX...');
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 20000);
+        try {
+            const res = await fetch(`/api/store/${tenant.storeSlug}/mercadopago/pix`, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${getToken()}`,
+                },
+                body: JSON.stringify(opts),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showToast.error(data.message || 'Erro ao gerar QR Code PIX');
+                return { success: false };
+            }
+            if (!data.qrCode || !data.qrCodeBase64) {
+                showToast.error('O Mercado Pago não retornou o QR Code PIX');
+                return { success: false };
+            }
+
+            showToast.success('QR Code PIX gerado!');
+            return {
+                success: true,
+                paymentId: data.id,
+                qrCode: data.qrCode,
+                qrCodeBase64: data.qrCodeBase64,
+                ticketUrl: data.ticketUrl,
+            };
+        } catch (err: any) {
+            showToast.error(err?.name === 'AbortError'
+                ? 'O Mercado Pago demorou para responder. Tente novamente.'
+                : 'Erro ao conectar com Mercado Pago');
+            return { success: false };
+        } finally {
+            window.clearTimeout(timeoutId);
+            showToast.dismiss(toastId);
+        }
+    };
+
     const copyLinkToClipboard = async (link: string) => {
         try {
             await navigator.clipboard.writeText(link);
@@ -96,5 +162,5 @@ export function useMercadoPago() {
         }
     };
 
-    return { generatePaymentLink, copyLinkToClipboard };
+    return { generatePaymentLink, generatePixPayment, copyLinkToClipboard };
 }
