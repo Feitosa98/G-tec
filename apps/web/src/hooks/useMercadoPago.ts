@@ -41,9 +41,12 @@ export function useMercadoPago() {
         }
 
         const toastId = showToast.loading('Gerando link de pagamento...');
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 20000);
         try {
             const res = await fetch(`/api/store/${tenant.storeSlug}/mercadopago/preference`, {
                 method: 'POST',
+                signal: controller.signal,
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${getToken()}`,
@@ -51,7 +54,7 @@ export function useMercadoPago() {
                 body: JSON.stringify(opts),
             });
 
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
 
             if (!res.ok) {
                 showToast.dismiss(toastId);
@@ -60,6 +63,11 @@ export function useMercadoPago() {
             }
 
             const link = data.initPoint || data.sandboxInitPoint;
+            if (!link) {
+                showToast.dismiss(toastId);
+                showToast.error('O Mercado Pago não retornou um link de pagamento');
+                return { link: null, success: false };
+            }
             showToast.dismiss(toastId);
             showToast.success('Link de pagamento gerado!');
 
@@ -70,8 +78,12 @@ export function useMercadoPago() {
             return { link, success: true };
         } catch (err: any) {
             showToast.dismiss(toastId);
-            showToast.error('Erro ao conectar com Mercado Pago');
+            showToast.error(err?.name === 'AbortError'
+                ? 'O Mercado Pago demorou para responder. Tente novamente.'
+                : 'Erro ao conectar com Mercado Pago');
             return { link: null, success: false };
+        } finally {
+            window.clearTimeout(timeoutId);
         }
     };
 

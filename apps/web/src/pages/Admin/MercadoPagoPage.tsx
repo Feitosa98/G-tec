@@ -76,12 +76,22 @@ export default function MercadoPagoPage() {
     };
 
     const handleTestLink = async () => {
+        const amount = parseFloat(testAmount.replace(',', '.'));
+        if (!Number.isFinite(amount) || amount <= 0) {
+            toast.error('Informe um valor maior que zero.');
+            return;
+        }
+
         setGeneratingTest(true);
-        const result = await generatePaymentLink({
-            items: [{ title: testDesc, quantity: 1, unit_price: parseFloat(testAmount.replace(',', '.')) }],
-        });
-        if (result.link) setGeneratedLink(result.link);
-        setGeneratingTest(false);
+        setGeneratedLink('');
+        try {
+            const result = await generatePaymentLink({
+                items: [{ title: testDesc.trim() || 'Produto Teste', quantity: 1, unit_price: amount }],
+            });
+            if (result.link) setGeneratedLink(result.link);
+        } finally {
+            setGeneratingTest(false);
+        }
     };
 
     return (

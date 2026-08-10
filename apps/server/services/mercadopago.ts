@@ -26,7 +26,7 @@ export interface MPPreferenceResult {
  * Cria uma preferência de pagamento no Mercado Pago (SDK v2)
  */
 export async function createMPPreference(opts: MPPreferenceOptions): Promise<MPPreferenceResult> {
-    const client = new MercadoPagoConfig({ accessToken: opts.accessToken });
+    const client = new MercadoPagoConfig({ accessToken: opts.accessToken, options: { timeout: 15000 } });
     const preferenceClient = new Preference(client);
 
     const response = await preferenceClient.create({
