@@ -91,3 +91,38 @@ export async function sendWhatsAppMessage(tenantId: string, phone: string, text:
     const jid = `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
     return await sock.sendMessage(jid, { text });
 }
+
+export async function sendWhatsAppCharge(tenantId: string, phone: string, options: {
+    message: string;
+    qrCodeBase64?: string;
+    pdfBase64?: string;
+    pdfFilename?: string;
+}) {
+    const sock = sessions.get(tenantId);
+    if (!sock || connectionStatus.get(tenantId) !== 'connected') {
+        throw new Error('WhatsApp is connecting or disconnected');
+    }
+
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) throw new Error('Invalid WhatsApp phone');
+    const jid = `${digits}@s.whatsapp.net`;
+
+    if (options.qrCodeBase64) {
+        await sock.sendMessage(jid, {
+            image: Buffer.from(options.qrCodeBase64, 'base64'),
+            caption: options.message,
+            mimetype: 'image/png',
+        });
+    } else {
+        await sock.sendMessage(jid, { text: options.message });
+    }
+
+    if (options.pdfBase64) {
+        await sock.sendMessage(jid, {
+            document: Buffer.from(options.pdfBase64, 'base64'),
+            mimetype: 'application/pdf',
+            fileName: options.pdfFilename || 'cobranca.pdf',
+            caption: 'Documento da cobrança',
+        });
+    }
+}

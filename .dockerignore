@@ -4,6 +4,7 @@
 .codex
 node_modules
 dist
+**/dist
 *.log
 .env*
 Dockerfile*

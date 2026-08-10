@@ -260,7 +260,15 @@ export const generateProfessionalPDF = async (options) => {
         doc.text(`Gerado por ${tenant.businessName || 'G-TEC'} - ${new Date().toLocaleString('pt-BR')}`, 105, pageHeight - 10, { align: 'center' });
         doc.text('Documento gerado eletronicamente.', 105, pageHeight - 6, { align: 'center' });
 
-        doc.save(options.filename || 'documento.pdf');
+        if (options.returnBase64) {
+            const dataUri = doc.output('datauristring');
+            return {
+                success: true,
+                base64: dataUri.substring(dataUri.indexOf(',') + 1),
+                filename: options.filename || 'documento.pdf',
+            };
+        }
+        if (options.save !== false) doc.save(options.filename || 'documento.pdf');
         return true;
     } catch (err) {
         console.error('Error generating PDF:', err);

@@ -77,11 +77,25 @@ const resolveOrderTotal = (order: any) => {
     return storedTotal > 0 || itemsTotal === 0 ? storedTotal : itemsTotal;
 };
 
+const defaultFlowTemplates = {
+    chargeCreatedEnabled: true,
+    paymentConfirmedEnabled: true,
+    serviceOrderCreatedEnabled: true,
+    serviceCompletedEnabled: true,
+    chargeCreated: 'Olá, {cliente}!\n\n{titulo}\nValor: R$ {valor}\n\nPIX Copia e Cola:\n{pix}\n\nO QR Code e o PDF seguem anexos.',
+    serviceOrderCreated: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi aberta com sucesso. Status atual: {status}. Valor previsto: R$ {valor}.',
+    serviceCompleted: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi concluída e está pronta para retirada. Valor: R$ {valor}. Obrigado pela preferência!',
+};
+
+const fillMessageTemplate = (template: string, values: Record<string, string>) => Object.entries(values)
+    .reduce((message, [key, value]) => message.replaceAll(`{${key}}`, value), template);
+
 const ServiceOrdersManager = () => {
     const { tenant, showConfirm, showAlert, registerSale } = useData();
     const { notify } = useNotify();
     const { generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard } = useMercadoPago();
     const [mpConfigured, setMpConfigured] = useState(false);
+    const [waTemplates, setWaTemplates] = useState(defaultFlowTemplates);
     const [pixPayments, setPixPayments] = useState<Record<string, any>>({});
     const [pixModal, setPixModal] = useState<{ order: any; payment: any } | null>(null);
 
@@ -111,6 +125,58 @@ const ServiceOrdersManager = () => {
             setPixPayments(prev => ({ ...prev, [order.id]: payment }));
             setPixModal({ order, payment });
         }
+    };
+
+    const sendAutomaticCharge = async (order: any, payment: any) => {
+        if (!waTemplates.chargeCreatedEnabled || !order.clientPhone || !payment?.qrCode || !payment?.qrCodeBase64) return false;
+        const total = resolveOrderTotal(order);
+        const rows = (order.items || []).map((item: any) => [
+            item.type || '-',
+            item.name || '-',
+            String(item.qty || 1),
+            `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+            `R$ ${(Number(item.price || 0) * (item.qty || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+        ]);
+        if (rows.length === 0) rows.push(['Venda', 'Valor informado manualmente', '1', `R$ ${total.toFixed(2).replace('.', ',')}`, `R$ ${total.toFixed(2).replace('.', ',')}`]);
+
+        const pdf = await generateProfessionalPDF({
+            tenant,
+            title: 'RECIBO DE VENDA',
+            documentNumber: `#${String(order.id).slice(0, 8).toUpperCase()}`,
+            customerInfo: [order.clientName, order.clientPhone, order.clientEmail || ''],
+            documentInfo: [
+                { label: 'Data:', value: new Date(order.createdAt).toLocaleDateString('pt-BR') },
+                { label: 'Status:', value: 'Aguardando pagamento' },
+            ],
+            tableColumns: ['Tipo', 'Item', 'Qtd', 'V. Unit', 'Total'],
+            tableRows: rows,
+            totalLabel: 'TOTAL A PAGAR:',
+            totalValue: total,
+            pixPayload: payment.qrCode,
+            filename: `venda_${String(order.id).slice(0, 8).toUpperCase()}.pdf`,
+            returnBase64: true,
+            save: false,
+        });
+        if (!pdf?.base64) return false;
+
+        const title = `Cobrança da venda #${String(order.id).slice(0, 8).toUpperCase()}`;
+        const message = fillMessageTemplate(waTemplates.chargeCreated, {
+            cliente: order.clientName || 'Cliente',
+            titulo: title,
+            numero: String(order.id).slice(0, 8).toUpperCase(),
+            valor: total.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            pix: payment.qrCode,
+            status: 'Aguardando pagamento',
+            empresa: tenant?.businessName || '',
+        });
+        return notify({
+            channel: 'whatsapp',
+            to: order.clientPhone,
+            message,
+            qrCodeBase64: payment.qrCodeBase64,
+            pdfBase64: pdf.base64,
+            pdfFilename: pdf.filename,
+        });
     };
 
     const [orders, setOrders] = useState([]);
@@ -182,6 +248,8 @@ const ServiceOrdersManager = () => {
             const servs = servRes.ok ? await servRes.json() : [];
             const integrations = integrationsRes.ok ? await integrationsRes.json() : [];
             setMpConfigured(integrations.some((item: any) => item.id === 'mercadopago' && item.accessToken));
+            const savedTemplates = integrations.find((item: any) => item.id === 'whatsapp_templates');
+            setWaTemplates({ ...defaultFlowTemplates, ...(savedTemplates || {}) });
             
             setInventory([
                 ...prods.map(p => ({ ...p, _type: 'Produto', _label: `[Produto] ${p.name} - R$ ${Number(p.price).toLocaleString('pt-BR', {minimumFractionDigits: 2})}` })),
@@ -358,9 +426,55 @@ const ServiceOrdersManager = () => {
         if (success) {
             showToast.success(`Ordem de Serviço ${editingOrder ? 'atualizada' : 'gerada'} com sucesso!`);
 
+            if (!editingOrder && orderData.orderType === 'Venda Direta' && mpConfigured) {
+                const payment = await generatePixPayment({
+                    amount: Number(orderData.totalValue) || 0,
+                    description: `Venda #${String(orderData.id).slice(0, 8).toUpperCase()}`,
+                    payerEmail: orderData.clientEmail,
+                    payerName: orderData.clientName,
+                    externalReference: orderData.id,
+                    referenceType: 'service_order',
+                });
+                if (payment.success) {
+                    const pendingPayment = { ...payment, status: 'pending' };
+                    setPixPayments(prev => ({ ...prev, [orderData.id]: pendingPayment }));
+                    setPixModal({ order: orderData, payment: pendingPayment });
+                    if (waTemplates.chargeCreatedEnabled) {
+                        const sent = await sendAutomaticCharge(orderData, pendingPayment);
+                        if (sent) {
+                            await saveOrder({ ...orderData, whatsappChargeSentAt: new Date().toISOString() });
+                            showToast.success('Cobrança, QR Code e PDF enviados ao cliente.');
+                        } else {
+                            showToast.error('Venda criada, mas o WhatsApp não enviou a cobrança. Verifique a conexão.');
+                        }
+                    }
+                }
+            }
+
+            if (!editingOrder && orderData.orderType !== 'Venda Direta' && orderData.clientPhone && waTemplates.serviceOrderCreatedEnabled) {
+                const message = fillMessageTemplate(waTemplates.serviceOrderCreated, {
+                    cliente: orderData.clientName || 'Cliente',
+                    numero: String(orderData.id).slice(0, 8).toUpperCase(),
+                    valor: Number(orderData.totalValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+                    status: orderData.status,
+                    empresa: tenant?.businessName || '',
+                    titulo: 'Ordem de serviço aberta',
+                    pix: '',
+                });
+                await notify({ channel: 'whatsapp', to: orderData.clientPhone, message });
+            }
+
             // 🔔 Notificação automática via WhatsApp ao concluir/entregar
-            if (['Concluída', 'Concluído', 'Entregue'].includes(orderData.status) && orderData.clientPhone) {
-                const msg = `🔧 Olá, ${orderData.clientName || 'Cliente'}! Sua Ordem de Serviço #${String(orderData.id || '').slice(0, 8).toUpperCase()} (${orderData.device || orderData.orderType || 'Serviço'}) foi *${orderData.status}* com sucesso!\n\n💰 Valor: R$ ${Number(orderData.totalValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n\n✅ Você já pode retirar seu dispositivo. Obrigado pela preferência! 😊`;
+            if (orderData.orderType !== 'Venda Direta' && ['Concluída', 'Concluído', 'Entregue'].includes(orderData.status) && orderData.clientPhone && waTemplates.serviceCompletedEnabled) {
+                const msg = fillMessageTemplate(waTemplates.serviceCompleted, {
+                    cliente: orderData.clientName || 'Cliente',
+                    numero: String(orderData.id || '').slice(0, 8).toUpperCase(),
+                    valor: Number(orderData.totalValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+                    status: orderData.status,
+                    empresa: tenant?.businessName || '',
+                    titulo: 'Serviço concluído',
+                    pix: '',
+                });
                 notify({ channel: 'whatsapp', to: orderData.clientPhone, message: msg });
             }
 
@@ -482,6 +596,7 @@ const ServiceOrdersManager = () => {
             case 'Aprovando Orçamento': return '#8b5cf6';
             case 'Concluída': return 'var(--color-success)';
             case 'Entregue': return '#10b981';
+            case 'Pago': return '#10b981';
             case 'Cancelada': return 'var(--color-danger)';
             default: return 'var(--color-text-muted)';
         }
@@ -503,6 +618,8 @@ const ServiceOrdersManager = () => {
                 return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
             case 'Entregue':
                 return 'bg-teal-500/10 text-teal-400 border-teal-500/30';
+            case 'Pago':
+                return 'bg-emerald-500/15 text-emerald-300 border-emerald-400/40';
             case 'Cancelada':
                 return 'bg-rose-500/10 text-rose-400 border-rose-500/30';
             default:
@@ -890,6 +1007,7 @@ const ServiceOrdersManager = () => {
                                     <option value="Aprovada">Aprovada</option>
                                     <option value="Concluída">Concluída</option>
                                     <option value="Entregue">Entregue</option>
+                                    <option value="Pago">Pago</option>
                                     <option value="Cancelada">Cancelada</option>
                                 </select>
                             </div>

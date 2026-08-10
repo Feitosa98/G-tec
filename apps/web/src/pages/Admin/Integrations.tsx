@@ -6,6 +6,17 @@ import toast from 'react-hot-toast';
 import { Mail, MessageCircle, Send, QrCode, PowerOff, Save, RefreshCw, CreditCard } from 'lucide-react';
 import MercadoPagoPage from './MercadoPagoPage';
 
+const defaultWaTemplates = {
+    chargeCreatedEnabled: true,
+    paymentConfirmedEnabled: true,
+    serviceOrderCreatedEnabled: true,
+    serviceCompletedEnabled: true,
+    chargeCreated: 'Olá, {cliente}!\n\n{titulo}\nValor: R$ {valor}\n\nPIX Copia e Cola:\n{pix}\n\nO QR Code e o PDF seguem anexos.',
+    paymentConfirmed: 'Olá, {cliente}! Recebemos seu pagamento PIX de R$ {valor}. A venda #{numero} está paga. Muito obrigado pela preferência!',
+    serviceOrderCreated: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi aberta com sucesso. Status atual: {status}. Valor previsto: R$ {valor}.',
+    serviceCompleted: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi concluída e está pronta para retirada. Valor: R$ {valor}. Obrigado pela preferência!',
+};
+
 export default function Integrations() {
     const { tenant } = useData();
     const token = useAuthStore(state => state.user?.token || '');
@@ -20,6 +31,8 @@ export default function Integrations() {
     const [waStatus, setWaStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
     const [waQr, setWaQr] = useState<string | null>(null);
     const [isPollingWa, setIsPollingWa] = useState(false);
+    const [waTemplates, setWaTemplates] = useState(defaultWaTemplates);
+    const [savingWaTemplates, setSavingWaTemplates] = useState(false);
 
     useEffect(() => {
         if (!tenant?.storeSlug || !token) return;
@@ -29,6 +42,10 @@ export default function Integrations() {
             if (email) setEmailForm({ host: email.host || '', port: email.port || '', user: email.user || '', pass: email.pass || '', from: email.from || '' });
             if (telegram) setTelegramForm({ token: telegram.token || '', defaultChatId: telegram.defaultChatId || '' });
         }).catch(() => toast.error('Não foi possível carregar as integrações.'));
+        fetch(`/api/store/${tenant.storeSlug}/whatsapp/templates`, { headers: { 'Authorization': `Bearer ${token}` } })
+            .then(res => res.ok ? res.json() : Promise.reject())
+            .then(data => setWaTemplates({ ...defaultWaTemplates, ...data }))
+            .catch(() => toast.error('Não foi possível carregar as mensagens do WhatsApp.'));
     }, [tenant?.storeSlug, token]);
 
     const fetchWaStatus = async () => {
@@ -84,6 +101,24 @@ export default function Integrations() {
             toast.success('WhatsApp desconectado');
         } catch (e) {
             toast.error('Erro ao desconectar WhatsApp');
+        }
+    };
+
+    const handleSaveWaTemplates = async () => {
+        if (!tenant?.storeSlug) return;
+        setSavingWaTemplates(true);
+        try {
+            const res = await fetch(`/api/store/${tenant.storeSlug}/whatsapp/templates`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(waTemplates),
+            });
+            if (!res.ok) throw new Error();
+            toast.success('Mensagens automáticas salvas.');
+        } catch {
+            toast.error('Não foi possível salvar as mensagens.');
+        } finally {
+            setSavingWaTemplates(false);
         }
     };
 
@@ -161,7 +196,7 @@ export default function Integrations() {
 
             <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 md:p-8 shadow-xl">
                 {activeTab === 'whatsapp' && (
-                    <div className="max-w-2xl">
+                    <div className="max-w-4xl">
                         <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
                             <MessageCircle className="w-5 h-5 mr-3 text-emerald-500" />
                             Conexão experimental com WhatsApp
@@ -174,7 +209,7 @@ export default function Integrations() {
                             <div className="flex items-center justify-between mb-6">
                                 <div>
                                     <h3 className="text-lg font-medium text-slate-200">Status da Conexão</h3>
-                                    <p className="text-sm text-slate-400 mt-1">Recurso experimental para mensagens de texto. O envio automático de PDF ainda não está habilitado.</p>
+                                    <p className="text-sm text-slate-400 mt-1">Recurso experimental para mensagens, QR Code e PDF.</p>
                                 </div>
                                 <div className={`px-4 py-1.5 rounded-full text-sm font-medium ${
                                     waStatus === 'connected' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
@@ -212,6 +247,40 @@ export default function Integrations() {
                                     Desconectar Sessão
                                 </button>
                             )}
+                        </div>
+
+                        <div className="rounded-xl border border-slate-700/60 bg-slate-800/30 p-6 space-y-5">
+                            <div>
+                                <h3 className="text-lg font-semibold text-white">Mensagens automáticas</h3>
+                                <p className="text-sm text-slate-400 mt-1">Campos disponíveis: {'{cliente}'}, {'{numero}'}, {'{valor}'}, {'{status}'}, {'{empresa}'}, {'{titulo}'} e {'{pix}'}.</p>
+                            </div>
+                            {[
+                                ['chargeCreated', 'chargeCreatedEnabled', 'Venda criada / cobrança PIX'],
+                                ['paymentConfirmed', 'paymentConfirmedEnabled', 'Pagamento confirmado / agradecimento'],
+                                ['serviceOrderCreated', 'serviceOrderCreatedEnabled', 'Ordem de serviço aberta'],
+                                ['serviceCompleted', 'serviceCompletedEnabled', 'Serviço concluído / retirada'],
+                            ].map(([field, enabledField, label]) => (
+                                <div key={field} className="rounded-xl border border-slate-700/50 bg-slate-950/40 p-4">
+                                    <label className="mb-3 flex items-center gap-3 text-sm font-medium text-slate-200">
+                                        <input
+                                            type="checkbox"
+                                            checked={Boolean((waTemplates as any)[enabledField])}
+                                            onChange={event => setWaTemplates(current => ({ ...current, [enabledField]: event.target.checked }))}
+                                            className="h-4 w-4 accent-emerald-500"
+                                        />
+                                        {label}
+                                    </label>
+                                    <textarea
+                                        value={(waTemplates as any)[field]}
+                                        onChange={event => setWaTemplates(current => ({ ...current, [field]: event.target.value }))}
+                                        rows={field === 'chargeCreated' ? 7 : 4}
+                                        className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200 outline-none focus:border-emerald-500"
+                                    />
+                                </div>
+                            ))}
+                            <button onClick={handleSaveWaTemplates} disabled={savingWaTemplates} className="w-full rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-60 flex items-center justify-center gap-2">
+                                <Save className="w-4 h-4" /> {savingWaTemplates ? 'Salvando...' : 'Salvar mensagens automáticas'}
+                            </button>
                         </div>
                     </div>
                 )}

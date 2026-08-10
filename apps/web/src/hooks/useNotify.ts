@@ -7,6 +7,9 @@ interface NotifyOptions {
     to: string;
     message: string;
     subject?: string;
+    qrCodeBase64?: string;
+    pdfBase64?: string;
+    pdfFilename?: string;
 }
 
 export function useNotify() {

@@ -55,7 +55,7 @@ app.use(helmet({
     contentSecurityPolicy: false, // Vite/React compatibility for local/inline scripts
     crossOriginEmbedderPolicy: false
 }));
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '3mb' }));
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -272,10 +272,57 @@ app.put('/api/store/:slug/settings', requireStoreAdmin, async (req, res, next) =
 
 import { initWhatsAppConnection, getWhatsAppStatus, disconnectWhatsApp } from './services/whatsapp.js';
 
+const defaultWhatsAppTemplates = {
+    id: 'whatsapp_templates',
+    chargeCreatedEnabled: true,
+    paymentConfirmedEnabled: true,
+    serviceOrderCreatedEnabled: true,
+    serviceCompletedEnabled: true,
+    chargeCreated: 'Olá, {cliente}!\n\n{titulo}\nValor: R$ {valor}\n\nPIX Copia e Cola:\n{pix}\n\nO QR Code e o PDF seguem anexos.',
+    paymentConfirmed: 'Olá, {cliente}! Recebemos seu pagamento PIX de R$ {valor}. A venda #{numero} está paga. Muito obrigado pela preferência!',
+    serviceOrderCreated: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi aberta com sucesso. Status atual: {status}. Valor previsto: R$ {valor}.',
+    serviceCompleted: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi concluída e está pronta para retirada. Valor: R$ {valor}. Obrigado pela preferência!',
+};
+
+const applyWhatsAppTemplate = (template: string, values: Record<string, string>) => Object.entries(values)
+    .reduce((message, [key, value]) => message.replaceAll(`{${key}}`, value), template);
+
 app.get('/api/store/:slug/whatsapp/status', requireStoreAdmin, async (req, res, next) => {
     try {
         const tenantId = cleanSlug(req.params.slug);
         return res.json(getWhatsAppStatus(tenantId));
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/whatsapp/templates', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const records = await listStoreRecords(slug, 'integrations');
+        const saved = (records || []).find((record: any) => record.id === 'whatsapp_templates') || {};
+        return res.json({ ...defaultWhatsAppTemplates, ...saved, id: 'whatsapp_templates' });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/whatsapp/templates', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const validation = z.object({
+            chargeCreatedEnabled: z.boolean(),
+            paymentConfirmedEnabled: z.boolean(),
+            serviceOrderCreatedEnabled: z.boolean(),
+            serviceCompletedEnabled: z.boolean(),
+            chargeCreated: z.string().trim().min(10).max(2000),
+            paymentConfirmed: z.string().trim().min(10).max(2000),
+            serviceOrderCreated: z.string().trim().min(10).max(2000),
+            serviceCompleted: z.string().trim().min(10).max(2000),
+        }).safeParse(req.body);
+        if (!validation.success) return res.status(400).json({ message: 'Revise os modelos de mensagens.' });
+        const saved = await upsertStoreRecord(slug, 'integrations', {
+            id: 'whatsapp_templates',
+            ...validation.data,
+            updatedAt: new Date().toISOString(),
+        });
+        return res.json(saved);
     } catch (error) { return next(error); }
 });
 
@@ -295,18 +342,21 @@ app.post('/api/store/:slug/whatsapp/disconnect', requireStoreAdmin, async (req, 
     } catch (error) { return next(error); }
 });
 
-import { sendWhatsAppMessage } from './services/whatsapp.js';
+import { sendWhatsAppCharge, sendWhatsAppMessage } from './services/whatsapp.js';
 import { sendTelegramMessage } from './services/telegram.js';
 import { sendEmail } from './services/email.js';
 
 // Unified notification endpoint
 app.post('/api/store/:slug/notify', requireStoreAdmin, async (req, res, next) => {
     try {
-        const { channel, to, message, subject } = req.body as {
+        const { channel, to, message, subject, qrCodeBase64, pdfBase64, pdfFilename } = req.body as {
             channel: 'whatsapp' | 'telegram' | 'email';
             to: string;
             message: string;
             subject?: string;
+            qrCodeBase64?: string;
+            pdfBase64?: string;
+            pdfFilename?: string;
         };
 
         if (!channel || !message) {
@@ -317,7 +367,17 @@ app.post('/api/store/:slug/notify', requireStoreAdmin, async (req, res, next) =>
 
         if (channel === 'whatsapp') {
             if (!to) return res.status(400).json({ message: 'Campo "to" (telefone) é obrigatório para WhatsApp.' });
-            await sendWhatsAppMessage(tenantId, to, message);
+            if (qrCodeBase64 || pdfBase64) {
+                if (qrCodeBase64 && (qrCodeBase64.length > 700_000 || !/^[A-Za-z0-9+/=]+$/.test(qrCodeBase64))) {
+                    return res.status(400).json({ message: 'QR Code inválido ou muito grande.' });
+                }
+                if (pdfBase64 && (pdfBase64.length > 1_500_000 || !/^[A-Za-z0-9+/=]+$/.test(pdfBase64))) {
+                    return res.status(400).json({ message: 'PDF inválido ou muito grande.' });
+                }
+                await sendWhatsAppCharge(tenantId, to, { message, qrCodeBase64, pdfBase64, pdfFilename });
+            } else {
+                await sendWhatsAppMessage(tenantId, to, message);
+            }
         } else if (channel === 'telegram') {
             await sendTelegramMessage(null, message, to || undefined);
         } else if (channel === 'email') {
@@ -419,6 +479,40 @@ const validPublicBaseUrl = (value: string) => {
     try {
         const url = new URL(value);
         return url.protocol === 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname);
+    } catch {
+        return false;
+    }
+};
+
+const sendPixThankYou = async (slug: string, order: any, paymentId: string, paidAmount: number) => {
+    if (!order?.clientPhone || order.whatsappThankYouSentAt) return false;
+    try {
+        const records = await listStoreRecords(slug, 'integrations');
+        const saved = (records || []).find((record: any) => record.id === 'whatsapp_templates') || {};
+        const templates = { ...defaultWhatsAppTemplates, ...saved };
+        if (!templates.paymentConfirmedEnabled) return false;
+        const message = applyWhatsAppTemplate(templates.paymentConfirmed, {
+            cliente: order.clientName || 'Cliente',
+            valor: paidAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            numero: String(order.id || '').slice(0, 8).toUpperCase(),
+            status: 'Pago',
+            empresa: '',
+            pix: '',
+            titulo: 'Pagamento confirmado',
+        });
+        await sendWhatsAppMessage(slug, order.clientPhone, message);
+        await upsertStoreRecord(slug, 'service_orders', {
+            ...order,
+            status: 'Pago',
+            paymentStatus: 'Pago',
+            paid: true,
+            paidAt: order.paidAt || new Date().toISOString(),
+            paidValue: paidAmount,
+            paymentMethod: 'Pix / Mercado Pago',
+            mercadoPagoPaymentId: paymentId,
+            whatsappThankYouSentAt: new Date().toISOString(),
+        });
+        return true;
     } catch {
         return false;
     }
@@ -642,6 +736,7 @@ app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreA
                     if (order) {
                         await upsertStoreRecord(slug, 'service_orders', {
                             ...order,
+                            status: 'Pago',
                             paymentStatus: 'Pago',
                             paid: true,
                             paidAt,
@@ -649,6 +744,7 @@ app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreA
                             paymentMethod: 'Pix / Mercado Pago',
                             mercadoPagoPaymentId: paymentId,
                         });
+                        await sendPixThankYou(slug, { ...order, status: 'Pago', paymentStatus: 'Pago' }, paymentId, paidAmount);
                         reconciliationStatus = 'completed';
                     }
                 }
@@ -720,6 +816,11 @@ app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
 
         if (!transaction) return res.sendStatus(200);
         if (transaction.reconciliationStatus === 'completed' && transaction.paymentId === paymentId) {
+            if (transaction.referenceType === 'service_order') {
+                const orders = await listStoreRecords(slug, 'service_orders') || [];
+                const order = orders.find((item: any) => item.id === externalReference);
+                if (order) await sendPixThankYou(slug, order, paymentId, paidAmount);
+            }
             return res.sendStatus(200);
         }
 
@@ -767,6 +868,7 @@ app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
             if (order) {
                 await upsertStoreRecord(slug, 'service_orders', {
                     ...order,
+                    status: 'Pago',
                     paymentStatus: 'Pago',
                     paid: true,
                     paidAt,
@@ -774,6 +876,7 @@ app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
                     paymentMethod: 'Pix / Mercado Pago',
                     mercadoPagoPaymentId: paymentId
                 });
+                await sendPixThankYou(slug, { ...order, status: 'Pago', paymentStatus: 'Pago' }, paymentId, paidAmount);
                 reconciled = true;
 
                 const sales = await listStoreRecords(slug, 'sales') || [];
