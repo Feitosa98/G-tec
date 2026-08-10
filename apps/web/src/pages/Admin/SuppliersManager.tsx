@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { Building2, Phone, Mail, Plus, Edit, Trash2, Save, X, Search } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { formatBrazilianPhone } from '../../utils/phone';
 
 const EMPTY_SUPPLIER = {
     name: '', cnpj: '', contact: '', phone: '', email: '', address: '', category: '', notes: ''
@@ -109,7 +110,7 @@ export default function SuppliersManager() {
                             </div>
                             <div className="space-y-1.5 text-sm text-slate-400">
                                 {s.contact && <p>👤 {s.contact}</p>}
-                                {s.phone && <div className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" />{s.phone}</div>}
+                                {s.phone && <div className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" />{formatBrazilianPhone(s.phone)}</div>}
                                 {s.email && <div className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" />{s.email}</div>}
                                 {s.cnpj && <p className="font-mono text-xs">{s.cnpj}</p>}
                                 {s.notes && <p className="text-slate-500 italic text-xs mt-2">{s.notes}</p>}
@@ -143,7 +144,9 @@ export default function SuppliersManager() {
                                     <label className="text-sm text-slate-400 mb-1.5 block">{f.label}</label>
                                     <input
                                         type="text" value={(form as any)[f.key]} placeholder={f.placeholder}
-                                        onChange={e => setForm({ ...form, [f.key]: e.target.value })}
+                                        onChange={e => setForm({ ...form, [f.key]: f.key === 'phone' ? formatBrazilianPhone(e.target.value) : e.target.value })}
+                                        inputMode={f.key === 'phone' ? 'numeric' : undefined}
+                                        maxLength={f.key === 'phone' ? 15 : undefined}
                                         className="w-full bg-slate-950/60 border border-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl px-4 py-2.5 text-slate-100 outline-none transition-all"
                                     />
                                 </div>

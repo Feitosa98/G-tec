@@ -270,7 +270,15 @@ app.put('/api/store/:slug/settings', requireStoreAdmin, async (req, res, next) =
     } catch (error) { return next(error); }
 });
 
-import { initWhatsAppConnection, getWhatsAppStatus, disconnectWhatsApp } from './services/whatsapp.js';
+import {
+    initWhatsAppConnection,
+    getWhatsAppStatus,
+    disconnectWhatsApp,
+    restoreWhatsAppSession,
+    restoreWhatsAppSessions,
+    sendWhatsAppCharge,
+    sendWhatsAppMessage,
+} from './services/whatsapp.js';
 
 const defaultWhatsAppTemplates = {
     id: 'whatsapp_templates',
@@ -290,6 +298,9 @@ const applyWhatsAppTemplate = (template: string, values: Record<string, string>)
 app.get('/api/store/:slug/whatsapp/status', requireStoreAdmin, async (req, res, next) => {
     try {
         const tenantId = cleanSlug(req.params.slug);
+        if (getWhatsAppStatus(tenantId).status === 'disconnected') {
+            await restoreWhatsAppSession(tenantId);
+        }
         return res.json(getWhatsAppStatus(tenantId));
     } catch (error) { return next(error); }
 });
@@ -342,7 +353,6 @@ app.post('/api/store/:slug/whatsapp/disconnect', requireStoreAdmin, async (req, 
     } catch (error) { return next(error); }
 });
 
-import { sendWhatsAppCharge, sendWhatsAppMessage } from './services/whatsapp.js';
 import { sendTelegramMessage } from './services/telegram.js';
 import { sendEmail } from './services/email.js';
 
@@ -966,4 +976,5 @@ app.use((req, res, next) => {
 });
 
 await initializeDatabases();
+await restoreWhatsAppSessions();
 app.listen(port, '0.0.0.0', () => console.log(`GTEC SaaS disponível na porta ${port}`));

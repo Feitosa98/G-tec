@@ -3,6 +3,7 @@ import { useData } from '../../hooks/useData';
 import { Plus, Trash2, Edit, Users, History, X, FileText, CheckCircle, Package } from 'lucide-react';
 import { format } from 'date-fns';
 import { showToast } from '../../utils/toast';
+import { formatBrazilianPhone } from '../../utils/phone';
 
 const CustomerManager = () => {
     const { tenant } = useData();
@@ -90,20 +91,7 @@ const CustomerManager = () => {
     };
 
     const handlePhoneChange = (e) => {
-        let value = e.target.value.replace(/\D/g, '');
-        if (value.length > 11) value = value.substring(0, 11);
-        
-        let formatted = value;
-        if (value.length > 10) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2,7)}-${value.substring(7)}`;
-        } else if (value.length > 6) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2,6)}-${value.substring(6)}`;
-        } else if (value.length > 2) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2)}`;
-        } else if (value.length > 0) {
-            formatted = `(${value}`;
-        }
-        setFormData({ ...formData, phone: formatted });
+        setFormData({ ...formData, phone: formatBrazilianPhone(e.target.value) });
     };
 
     const handleEdit = (customer) => {
@@ -111,7 +99,7 @@ const CustomerManager = () => {
         setFormData({
             name: customer.name || '',
             email: customer.email || '',
-            phone: customer.phone || '',
+            phone: formatBrazilianPhone(customer.phone),
             document: customer.document || '',
             address: customer.address || ''
         });
@@ -206,6 +194,8 @@ const CustomerManager = () => {
                             <input 
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/80 transition-all duration-200" 
                                 name="phone" 
+                                type="tel"
+                                inputMode="numeric"
                                 placeholder="Ex: (11) 99999-9999" 
                                 value={formData.phone} 
                                 onChange={handlePhoneChange} 
@@ -274,7 +264,7 @@ const CustomerManager = () => {
                                         <td className="px-6 py-4 text-sm font-semibold text-white">{customer.name}</td>
                                         <td className="px-6 py-4 text-sm">
                                             <div className="text-slate-200 font-medium">{customer.email || '-'}</div>
-                                            <div className="text-xs text-slate-400 mt-0.5">{customer.phone || '-'}</div>
+                                            <div className="text-xs text-slate-400 mt-0.5">{formatBrazilianPhone(customer.phone) || '-'}</div>
                                         </td>
                                         <td className="px-6 py-4 text-sm text-slate-300 font-mono text-xs">{customer.document || '-'}</td>
                                         <td className="px-6 py-4 text-sm text-slate-300 max-w-xs truncate" title={customer.address || ''}>{customer.address || '-'}</td>

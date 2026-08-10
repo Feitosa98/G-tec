@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Building2, Check, Copy, ExternalLink, Image, Link2, Palette, Save, QrCode } from 'lucide-react';
 import { useData } from '../../hooks/useData';
 import { showToast } from '../../utils/toast';
+import { formatBrazilianPhone } from '../../utils/phone';
 
 const themePresets = [
     { name: 'Tecnologia', primaryColor: '#0052cc', accentColor: '#d4a024', backgroundColor: '#0a0e1a', cardColor: '#12182b' },
@@ -16,7 +17,7 @@ const TenantSettings = () => {
     const [copied, setCopied] = useState(false);
 
     useEffect(() => {
-        if (tenant) setSettings(tenant);
+        if (tenant) setSettings({ ...tenant, whatsapp: formatBrazilianPhone(tenant.whatsapp) });
     }, [tenant]);
 
     const publicUrl = useMemo(() => {
@@ -37,23 +38,9 @@ const TenantSettings = () => {
     };
 
     const handlePhoneChange = (event) => {
-        let value = event.target.value.replace(/\D/g, '');
-        if (value.length > 11) value = value.substring(0, 11);
-        
-        let formatted = value;
-        if (value.length > 10) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2,7)}-${value.substring(7)}`;
-        } else if (value.length > 6) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2,6)}-${value.substring(6)}`;
-        } else if (value.length > 2) {
-            formatted = `(${value.substring(0,2)}) ${value.substring(2)}`;
-        } else if (value.length > 0) {
-            formatted = `(${value}`;
-        }
-        
         setSettings(current => ({
             ...current,
-            whatsapp: formatted
+            whatsapp: formatBrazilianPhone(event.target.value)
         }));
     };
 
@@ -146,6 +133,9 @@ const TenantSettings = () => {
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="whatsapp"
+                                type="tel"
+                                inputMode="numeric"
+                                placeholder="(92) 99999-9999"
                                 value={settings.whatsapp}
                                 onChange={handlePhoneChange}
                                 maxLength={15}

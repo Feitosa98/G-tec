@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { Calendar, Plus, ChevronLeft, ChevronRight, Clock, User, Phone, X, Save, Edit, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { formatBrazilianPhone } from '../../utils/phone';
 
 const DAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const MONTHS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -193,7 +194,7 @@ export default function Agenda() {
                                 <div className="space-y-1 text-xs text-slate-400">
                                     {a.time && <p className="flex items-center gap-1"><Clock className="w-3 h-3" />{a.date} às {a.time}</p>}
                                     {a.client && <p className="flex items-center gap-1"><User className="w-3 h-3" />{a.client}</p>}
-                                    {a.phone && <p className="flex items-center gap-1"><Phone className="w-3 h-3" />{a.phone}</p>}
+                                    {a.phone && <p className="flex items-center gap-1"><Phone className="w-3 h-3" />{formatBrazilianPhone(a.phone)}</p>}
                                     {a.notes && <p className="text-slate-500 italic">{a.notes}</p>}
                                 </div>
                             </div>
@@ -250,7 +251,7 @@ export default function Agenda() {
                             </div>
                             <div>
                                 <label className="text-sm text-slate-400 mb-1.5 block">Telefone</label>
-                                <input type="text" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="(92) 99999-9999"
+                                <input type="tel" inputMode="numeric" maxLength={15} value={form.phone} onChange={e => setForm({ ...form, phone: formatBrazilianPhone(e.target.value) })} placeholder="(92) 99999-9999"
                                     className="w-full bg-slate-950/60 border border-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl px-4 py-2.5 text-slate-100 outline-none transition-all" />
                             </div>
                             <div>

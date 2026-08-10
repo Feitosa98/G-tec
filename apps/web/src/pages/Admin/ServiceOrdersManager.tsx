@@ -7,6 +7,7 @@ import {
 import { showToast } from '../../utils/toast';
 import { generateProfessionalPDF } from '../../utils/pdfGenerator';
 import { useNotify } from '../../hooks/useNotify';
+import { formatBrazilianPhone } from '../../utils/phone';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
 
 
@@ -306,7 +307,7 @@ const ServiceOrdersManager = () => {
         const custId = e.target.value;
         const cust = customers.find(c => c.id === custId);
         if (cust) {
-            setFormData({ ...formData, customerId: cust.id, clientName: cust.name, clientPhone: cust.phone || '', clientEmail: cust.email || '' });
+            setFormData({ ...formData, customerId: cust.id, clientName: cust.name, clientPhone: formatBrazilianPhone(cust.phone), clientEmail: cust.email || '' });
         } else {
             setFormData({ ...formData, customerId: '', clientName: '', clientPhone: '', clientEmail: '' });
         }
@@ -362,7 +363,7 @@ const ServiceOrdersManager = () => {
         setFormData({
             customerId: order.customerId || '',
             clientName: order.clientName || '',
-            clientPhone: order.clientPhone || '',
+            clientPhone: formatBrazilianPhone(order.clientPhone),
             clientEmail: order.clientEmail || '',
             device: order.device || '',
             devicePassword: order.devicePassword || '',
@@ -564,7 +565,7 @@ const ServiceOrdersManager = () => {
                 documentNumber: `#${order.id.split('-')[0].toUpperCase()}`,
                 customerInfo: [
                     order.clientName,
-                    order.clientPhone || 'Sem telefone'
+                    formatBrazilianPhone(order.clientPhone) || 'Sem telefone'
                 ],
                 documentInfo,
                 tableColumns: ['Tipo', 'Item', 'Qtd', 'V. Unit', 'Total'],
@@ -803,7 +804,7 @@ const ServiceOrdersManager = () => {
                                     name="clientName" 
                                     placeholder="Nome do Cliente" 
                                     value={formData.clientName} 
-                                    onChange={handleChange} 
+                                    onChange={handleChange}
                                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all" 
                                     required 
                                 />
@@ -814,9 +815,12 @@ const ServiceOrdersManager = () => {
                                 </label>
                                 <input 
                                     name="clientPhone" 
-                                    placeholder="Telefone/WhatsApp" 
+                                    type="tel"
+                                    inputMode="numeric"
+                                    maxLength={15}
+                                    placeholder="(92) 99999-9999"
                                     value={formData.clientPhone} 
-                                    onChange={handleChange} 
+                                    onChange={e => setFormData({ ...formData, clientPhone: formatBrazilianPhone(e.target.value) })}
                                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all" 
                                     required 
                                 />
@@ -1079,7 +1083,7 @@ const ServiceOrdersManager = () => {
                                         </td>
                                         <td className="py-4 px-5">
                                             <div className="font-semibold text-slate-100">{order.clientName}</div>
-                                            <div className="text-xs text-slate-400 mt-0.5">{order.clientPhone || 'Sem telefone'}</div>
+                                            <div className="text-xs text-slate-400 mt-0.5">{formatBrazilianPhone(order.clientPhone) || 'Sem telefone'}</div>
                                         </td>
                                         <td className="py-4 px-5 text-slate-300">
                                             {order.orderType === 'Venda Direta' ? (
