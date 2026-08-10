@@ -1,6 +1,17 @@
 import toast from 'react-hot-toast';
 
 export const showToast = {
+    loading: (message) => toast.loading(message, {
+        position: 'top-right',
+        style: {
+            background: 'var(--color-bg-card)',
+            color: 'white',
+            border: '1px solid var(--color-primary)',
+        },
+    }),
+
+    dismiss: (toastId) => toast.dismiss(toastId),
+
     success: (message) => {
         toast.success(message, {
             duration: 3000,

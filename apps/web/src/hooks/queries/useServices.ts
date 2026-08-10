@@ -35,14 +35,14 @@ export const useDeleteService = () => {
 export const useServiceOrders = () => {
     return useQuery({
         queryKey: storeQueryKey('serviceOrders'),
-        queryFn: () => storeRequest('serviceOrders')
+        queryFn: () => storeRequest('service_orders')
     });
 };
 
 export const useAddServiceOrder = () => {
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: (order: any) => storeRequest('serviceOrders', { method: 'POST', body: JSON.stringify(order) }),
+        mutationFn: (order: any) => storeRequest('service_orders', { method: 'POST', body: JSON.stringify(order) }),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: storeQueryKey('serviceOrders') })
     });
 };
@@ -50,7 +50,7 @@ export const useAddServiceOrder = () => {
 export const useUpdateServiceOrder = () => {
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: ({ id, ...data }: any) => storeRequest(`serviceOrders/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+        mutationFn: ({ id, ...data }: any) => storeRequest(`service_orders/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: storeQueryKey('serviceOrders') })
     });
 };
