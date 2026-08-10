@@ -41,6 +41,14 @@ interface GeneratePixPaymentResult {
     ticketUrl?: string;
 }
 
+interface PixPaymentStatusResult {
+    success: boolean;
+    status?: string;
+    approved?: boolean;
+    paidAt?: string | null;
+    paidAmount?: number;
+}
+
 /**
  * Hook para gerar links de pagamento via Mercado Pago
  */
@@ -153,6 +161,26 @@ export function useMercadoPago() {
         }
     };
 
+    const checkPixPaymentStatus = async (paymentId: string): Promise<PixPaymentStatusResult> => {
+        if (!tenant?.storeSlug || !paymentId) return { success: false };
+        try {
+            const res = await fetch(`/api/store/${tenant.storeSlug}/mercadopago/payments/${paymentId}/status`, {
+                headers: { 'Authorization': `Bearer ${getToken()}` },
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) return { success: false };
+            return {
+                success: true,
+                status: data.status,
+                approved: Boolean(data.approved),
+                paidAt: data.paidAt,
+                paidAmount: data.paidAmount,
+            };
+        } catch {
+            return { success: false };
+        }
+    };
+
     const copyLinkToClipboard = async (link: string) => {
         try {
             await navigator.clipboard.writeText(link);
@@ -162,5 +190,5 @@ export function useMercadoPago() {
         }
     };
 
-    return { generatePaymentLink, generatePixPayment, copyLinkToClipboard };
+    return { generatePaymentLink, generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard };
 }

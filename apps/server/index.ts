@@ -577,6 +577,55 @@ app.post('/api/store/:slug/mercadopago/pix', requireStoreAdmin, async (req, res)
     }
 });
 
+app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreAdmin, async (req, res) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const paymentId = String(req.params.paymentId || '').trim();
+        if (!/^\d+$/.test(paymentId)) {
+            return res.status(400).json({ message: 'Identificador do pagamento inválido.' });
+        }
+
+        const records = await listStoreRecords(slug, 'integrations');
+        const mpConfig = (records || []).find((record: any) => record.id === 'mercadopago');
+        if (!mpConfig?.accessToken) {
+            return res.status(400).json({ message: 'Mercado Pago não configurado.' });
+        }
+
+        const payment = await getMPPayment(mpConfig.accessToken, paymentId);
+        const status = String(payment.status || 'unknown');
+        const transactions = await listStoreRecords(slug, 'payment_transactions') || [];
+        const transaction = transactions.find((item: any) => String(item.paymentId || item.id) === paymentId);
+        if (transaction) {
+            await upsertStoreRecord(slug, 'payment_transactions', {
+                ...transaction,
+                paymentId,
+                status,
+                paymentStatus: status,
+                paymentMethod: String(payment.payment_method_id || ''),
+                paidAmount: Number(payment.transaction_amount) || 0,
+                paidAt: payment.date_approved || transaction.paidAt,
+                reconciliationStatus: status === 'approved' && transaction.referenceType === 'test'
+                    ? 'completed'
+                    : transaction.reconciliationStatus,
+                updatedAt: new Date().toISOString(),
+            });
+        }
+
+        return res.json({
+            paymentId,
+            status,
+            statusDetail: String(payment.status_detail || ''),
+            approved: status === 'approved',
+            paymentMethod: String(payment.payment_method_id || ''),
+            paidAmount: Number(payment.transaction_amount) || 0,
+            paidAt: payment.date_approved || null,
+        });
+    } catch (error: any) {
+        const message = String(error?.message || 'Erro ao consultar pagamento');
+        return res.status(500).json({ message });
+    }
+});
+
 app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
