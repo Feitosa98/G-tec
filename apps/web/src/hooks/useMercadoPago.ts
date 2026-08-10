@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { useData } from './useData';
 import { showToast } from '../utils/toast';
 
@@ -47,18 +48,20 @@ interface PixPaymentStatusResult {
     approved?: boolean;
     paidAt?: string | null;
     paidAmount?: number;
+    paymentId?: string;
+    description?: string;
 }
 
 /**
  * Hook para gerar links de pagamento via Mercado Pago
  */
+const getToken = () => {
+    try { return JSON.parse(localStorage.getItem('gtec-session'))?.token || ''; }
+    catch { return ''; }
+};
+
 export function useMercadoPago() {
     const { tenant } = useData();
-
-    const getToken = () => {
-        try { return JSON.parse(localStorage.getItem('gtec-session'))?.token || ''; }
-        catch { return ''; }
-    };
 
     const generatePaymentLink = async (opts: GeneratePaymentLinkOptions): Promise<GeneratePaymentLinkResult> => {
         if (!tenant?.storeSlug) {
@@ -161,7 +164,7 @@ export function useMercadoPago() {
         }
     };
 
-    const checkPixPaymentStatus = async (paymentId: string): Promise<PixPaymentStatusResult> => {
+    const checkPixPaymentStatus = useCallback(async (paymentId: string): Promise<PixPaymentStatusResult> => {
         if (!tenant?.storeSlug || !paymentId) return { success: false };
         try {
             const res = await fetch(`/api/store/${tenant.storeSlug}/mercadopago/payments/${paymentId}/status`, {
@@ -179,7 +182,29 @@ export function useMercadoPago() {
         } catch {
             return { success: false };
         }
-    };
+    }, [tenant?.storeSlug]);
+
+    const getLatestPixPaymentStatus = useCallback(async (): Promise<PixPaymentStatusResult> => {
+        if (!tenant?.storeSlug) return { success: false };
+        try {
+            const res = await fetch(`/api/store/${tenant.storeSlug}/mercadopago/payments/latest`, {
+                headers: { 'Authorization': `Bearer ${getToken()}` },
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) return { success: false };
+            return {
+                success: true,
+                paymentId: data.paymentId,
+                description: data.description,
+                status: data.status,
+                approved: Boolean(data.approved),
+                paidAt: data.paidAt,
+                paidAmount: data.paidAmount,
+            };
+        } catch {
+            return { success: false };
+        }
+    }, [tenant?.storeSlug]);
 
     const copyLinkToClipboard = async (link: string) => {
         try {
@@ -190,5 +215,5 @@ export function useMercadoPago() {
         }
     };
 
-    return { generatePaymentLink, generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard };
+    return { generatePaymentLink, generatePixPayment, checkPixPaymentStatus, getLatestPixPaymentStatus, copyLinkToClipboard };
 }

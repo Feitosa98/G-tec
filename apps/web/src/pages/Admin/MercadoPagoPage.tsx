@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 
 export default function MercadoPagoPage() {
     const { tenant } = useData();
-    const { generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard } = useMercadoPago();
+    const { generatePixPayment, checkPixPaymentStatus, getLatestPixPaymentStatus, copyLinkToClipboard } = useMercadoPago();
 
     const [accessToken, setAccessToken] = useState('');
     const [sandbox, setSandbox] = useState(true);
@@ -25,6 +25,7 @@ export default function MercadoPagoPage() {
     const [generatedPix, setGeneratedPix] = useState<{ paymentId?: string; qrCode?: string; qrCodeBase64?: string; ticketUrl?: string } | null>(null);
     const [pixStatus, setPixStatus] = useState<'pending' | 'approved' | 'rejected' | 'cancelled'>('pending');
     const [pixPaidAt, setPixPaidAt] = useState<string | null>(null);
+    const [latestPayment, setLatestPayment] = useState<{ paymentId?: string; description?: string; approved?: boolean; status?: string; paidAt?: string | null; paidAmount?: number } | null>(null);
     const [generatingTest, setGeneratingTest] = useState(false);
 
     const getToken = () => {
@@ -57,6 +58,13 @@ export default function MercadoPagoPage() {
     useEffect(() => {
         if (tenant?.email) setTestEmail(current => current || tenant.email);
     }, [tenant?.email]);
+
+    useEffect(() => {
+        if (!tenant?.storeSlug || !configured) return;
+        void getLatestPixPaymentStatus().then(result => {
+            if (result.success) setLatestPayment(result);
+        });
+    }, [tenant?.storeSlug, configured, getLatestPixPaymentStatus]);
 
     useEffect(() => {
         const paymentId = generatedPix?.paymentId;
@@ -290,6 +298,18 @@ export default function MercadoPagoPage() {
                     <h3 className="font-semibold text-slate-200 flex items-center gap-2">
                         <CreditCard className="w-5 h-5 text-slate-400" /> Testar Geração de Link
                     </h3>
+                    {latestPayment?.approved && !generatedPix && (
+                        <div className="flex items-center gap-4 p-4 bg-emerald-500/10 border border-emerald-400/30 rounded-xl">
+                            <CheckCircle className="w-10 h-10 text-emerald-400 shrink-0" />
+                            <div>
+                                <p className="font-bold text-emerald-400">Último pagamento PIX confirmado</p>
+                                <p className="text-sm text-slate-300">
+                                    {latestPayment.description || 'Pagamento PIX'} — R$ {Number(latestPayment.paidAmount || 0).toFixed(2).replace('.', ',')}
+                                </p>
+                                {latestPayment.paidAt && <p className="text-xs text-slate-500">Confirmado em {new Date(latestPayment.paidAt).toLocaleString('pt-BR')}</p>}
+                            </div>
+                        </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label className="text-xs text-slate-400 mb-1.5 block">Descrição</label>

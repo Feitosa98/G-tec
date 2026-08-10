@@ -577,6 +577,37 @@ app.post('/api/store/:slug/mercadopago/pix', requireStoreAdmin, async (req, res)
     }
 });
 
+app.get('/api/store/:slug/mercadopago/payments/latest', requireStoreAdmin, async (req, res) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const integrations = await listStoreRecords(slug, 'integrations');
+        const mpConfig = (integrations || []).find((record: any) => record.id === 'mercadopago');
+        if (!mpConfig?.accessToken) {
+            return res.status(400).json({ message: 'Mercado Pago não configurado.' });
+        }
+
+        const transactions = await listStoreRecords(slug, 'payment_transactions') || [];
+        const latest = transactions
+            .filter((item: any) => item.referenceType === 'test' && (item.paymentId || item.id))
+            .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+        if (!latest) return res.status(404).json({ message: 'Nenhum pagamento de teste encontrado.' });
+
+        const paymentId = String(latest.paymentId || latest.id);
+        const payment = await getMPPayment(mpConfig.accessToken, paymentId);
+        const status = String(payment.status || 'unknown');
+        return res.json({
+            paymentId,
+            status,
+            approved: status === 'approved',
+            paidAt: payment.date_approved || null,
+            paidAmount: Number(payment.transaction_amount) || Number(latest.expectedAmount) || 0,
+            description: String(payment.description || 'Pagamento PIX'),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: String(error?.message || 'Erro ao consultar último pagamento') });
+    }
+});
+
 app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreAdmin, async (req, res) => {
     try {
         const slug = cleanSlug(req.params.slug);
