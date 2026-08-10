@@ -100,10 +100,27 @@ const ServiceOrdersManager = () => {
     const [pixPayments, setPixPayments] = useState<Record<string, any>>({});
     const [pixModal, setPixModal] = useState<{ order: any; payment: any } | null>(null);
 
-    const handleSendWhatsApp = (order: any) => {
+    const handleSendWhatsApp = async (order: any) => {
         const phone = order.clientPhone || '';
-        const message = `🔧 Olá, ${order.clientName || 'Cliente'}! Sua Ordem de Serviço #${String(order.id || '').slice(0, 8).toUpperCase()} (${order.device || order.orderType || 'Serviço'}) está com status: *${order.status}*.\n\n💰 Valor: R$ ${resolveOrderTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n\nObrigado pela preferência! 😊`;
-        notify({ channel: 'whatsapp', to: phone, message });
+        if (!phone) {
+            showToast.error('Cadastre o telefone do cliente antes de enviar a mensagem.');
+            return;
+        }
+
+        const isCompleted = ['Concluída', 'Concluído', 'Entregue', 'Pago'].includes(order.status);
+        const message = fillMessageTemplate(
+            isCompleted ? waTemplates.serviceCompleted : waTemplates.serviceOrderCreated,
+            {
+                cliente: order.clientName || 'Cliente',
+                numero: String(order.id || '').slice(0, 8).toUpperCase(),
+                valor: resolveOrderTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+                status: order.status || 'Aberta',
+                empresa: tenant?.businessName || '',
+                titulo: isCompleted ? 'Serviço concluído' : 'Ordem de serviço aberta',
+                pix: '',
+            }
+        );
+        await notify({ channel: 'whatsapp', to: phone, message });
     };
 
     const handleMPPayment = async (order: any) => {
@@ -476,7 +493,7 @@ const ServiceOrdersManager = () => {
                     titulo: 'Serviço concluído',
                     pix: '',
                 });
-                notify({ channel: 'whatsapp', to: orderData.clientPhone, message: msg });
+                await notify({ channel: 'whatsapp', to: orderData.clientPhone, message: msg });
             }
 
             setIsFormOpen(false);
