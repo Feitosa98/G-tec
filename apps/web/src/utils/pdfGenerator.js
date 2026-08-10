@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import QRCode from 'qrcode';
 
 const loadImage = (src) => {
     return new Promise((resolve) => {
@@ -77,35 +78,38 @@ export const generateProfessionalPDF = async (options) => {
         doc.line(0, 45, 210, 45);
 
         // --- HEADER CONTENT ---
-        // Logo
+        // Logo e identificação da empresa
         if (logo) {
-            doc.addImage(logo, 'PNG', 15, 7, 30, 30);
+            doc.addImage(logo, 'PNG', 15, 8, 25, 25);
         }
 
-        // Company Info (White text on dark bg)
+        const companyX = logo ? 46 : 15;
         doc.setTextColor(255, 255, 255);
-        doc.setFontSize(22);
+        doc.setFontSize(16);
         doc.setFont('helvetica', 'bold');
         const bName = tenant.businessName || 'G-TEC Informática';
-        const truncatedName = bName.length > 25 ? bName.substring(0, 22) + '...' : bName;
-        doc.text(truncatedName, 50, 18);
+        const companyName = doc.splitTextToSize(bName, 76)[0];
+        doc.text(companyName, companyX, 15);
 
-        doc.setFontSize(9);
+        doc.setFontSize(8);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(200, 200, 200);
-        doc.text(`CNPJ/CPF: ${tenant.document || 'Não informado'}`, 50, 25);
-        doc.text(tenant.address || 'Endereço não informado', 50, 31);
-        doc.text(`${tenant.email || ''}  |  ${formatPhone(tenant.whatsapp)}`, 50, 37);
+        doc.text(`CNPJ/CPF: ${tenant.document || 'Não informado'}`, companyX, 21);
+        doc.text(doc.splitTextToSize(tenant.address || 'Endereço não informado', 76)[0], companyX, 27);
+        doc.text(doc.splitTextToSize(`${tenant.email || ''}  |  ${formatPhone(tenant.whatsapp)}`, 76)[0], companyX, 33);
 
-        // Document Title
-        doc.setFontSize(26);
+        // Identificação do documento em área reservada, sem sobrepor a empresa
+        doc.setFillColor(20, 27, 45);
+        doc.roundedRect(132, 8, 63, 29, 3, 3, 'F');
+        doc.setFontSize(title.length > 18 ? 15 : 18);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(...colorAccent);
-        doc.text(title, 195, 24, { align: 'right' });
+        const titleLines = doc.splitTextToSize(title, 55).slice(0, 2);
+        doc.text(titleLines, 163.5, 17, { align: 'center' });
 
-        doc.setFontSize(11);
+        doc.setFontSize(9);
         doc.setTextColor(255, 255, 255);
-        doc.text(`${documentNumber}`, 195, 33, { align: 'right' });
+        doc.text(`${documentNumber}`, 163.5, 32, { align: 'center' });
 
         // --- INFO PANELS ---
         const startY = 60;
@@ -161,11 +165,17 @@ export const generateProfessionalPDF = async (options) => {
             alternateRowStyles: {
                 fillColor: [250, 250, 250]
             },
-            columnStyles: {
-                0: { cellWidth: 'auto' }, 
-                1: { cellWidth: 20, halign: 'center' }, 
-                2: { cellWidth: 35, halign: 'right' }, 
-                3: { cellWidth: 35, halign: 'right', fontStyle: 'bold' } 
+            columnStyles: tableColumns.length === 5 ? {
+                0: { cellWidth: 23 },
+                1: { cellWidth: 'auto' },
+                2: { cellWidth: 18, halign: 'center' },
+                3: { cellWidth: 32, halign: 'right' },
+                4: { cellWidth: 32, halign: 'right', fontStyle: 'bold' }
+            } : {
+                0: { cellWidth: 'auto' },
+                1: { cellWidth: 18, halign: 'center' },
+                2: { cellWidth: 35, halign: 'right' },
+                3: { cellWidth: 35, halign: 'right', fontStyle: 'bold' }
             },
         });
 
@@ -229,19 +239,8 @@ export const generateProfessionalPDF = async (options) => {
                 doc.text(splitPix, 20, finalY + 18);
 
                 try {
-                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&margin=0&data=${encodeURIComponent(options.pixPayload)}`;
-                    const response = await fetch(qrUrl);
-                    if (response.ok) {
-                        const blob = await response.blob();
-                        return new Promise((resolve) => {
-                            const reader = new FileReader();
-                            reader.onloadend = () => {
-                                doc.addImage(reader.result, 'PNG', 140, finalY + 2, 46, 46);
-                                resolve();
-                            };
-                            reader.readAsDataURL(blob);
-                        });
-                    }
+                    const qrDataUrl = await QRCode.toDataURL(options.pixPayload, { width: 300, margin: 1, errorCorrectionLevel: 'M' });
+                    doc.addImage(qrDataUrl, 'PNG', 142, finalY + 3, 44, 44);
                 } catch (error) {
                     console.error("Could not load QR", error);
                 }

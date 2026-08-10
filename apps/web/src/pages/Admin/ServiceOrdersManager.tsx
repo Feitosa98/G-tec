@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { 
     Plus, Trash2, Edit, ClipboardList, Printer, CheckCircle, Search, 
-    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy
+    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy, QrCode, ExternalLink
 } from 'lucide-react';
 import { showToast } from '../../utils/toast';
 import { generateProfessionalPDF } from '../../utils/pdfGenerator';
@@ -80,8 +80,10 @@ const resolveOrderTotal = (order: any) => {
 const ServiceOrdersManager = () => {
     const { tenant, showConfirm, showAlert, registerSale } = useData();
     const { notify } = useNotify();
-    const { generatePaymentLink, copyLinkToClipboard } = useMercadoPago();
-    const [mpLinks, setMpLinks] = useState<Record<string, string>>({});
+    const { generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard } = useMercadoPago();
+    const [mpConfigured, setMpConfigured] = useState(false);
+    const [pixPayments, setPixPayments] = useState<Record<string, any>>({});
+    const [pixModal, setPixModal] = useState<{ order: any; payment: any } | null>(null);
 
     const handleSendWhatsApp = (order: any) => {
         const phone = order.clientPhone || '';
@@ -90,14 +92,24 @@ const ServiceOrdersManager = () => {
     };
 
     const handleMPPayment = async (order: any) => {
-        const result = await generatePaymentLink({
-            items: [{ title: `O.S. #${String(order.id || '').slice(0, 8).toUpperCase()} - ${order.device || order.orderType || 'Serviço'}`, quantity: 1, unit_price: resolveOrderTotal(order) }],
+        const customer = customers.find((item: any) => item.id === order.customerId);
+        const payerEmail = order.clientEmail || customer?.email;
+        if (!payerEmail) {
+            showToast.error('Informe o e-mail do cliente na venda para gerar o PIX.');
+            return;
+        }
+        const result = await generatePixPayment({
+            amount: resolveOrderTotal(order),
+            description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} #${String(order.id || '').slice(0, 8).toUpperCase()}`,
+            payerEmail,
             payerName: order.clientName,
             externalReference: order.id,
             referenceType: 'service_order',
         });
-        if (result.link) {
-            setMpLinks(prev => ({ ...prev, [order.id]: result.link! }));
+        if (result.success) {
+            const payment = { ...result, status: 'pending' };
+            setPixPayments(prev => ({ ...prev, [order.id]: payment }));
+            setPixModal({ order, payment });
         }
     };
 
@@ -109,13 +121,36 @@ const ServiceOrdersManager = () => {
     const [searchTerm, setSearchTerm] = useState('');
     
     const [formData, setFormData] = useState({
-        customerId: '', clientName: '', clientPhone: '', 
+        customerId: '', clientName: '', clientPhone: '', clientEmail: '',
         device: '', devicePassword: '', issueDescription: '', technicalReport: '', warranty: '', 
         status: 'Aberta', items: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
     });
 
     const [selectedItem, setSelectedItem] = useState('');
     const [itemQty, setItemQty] = useState(1);
+
+    useEffect(() => {
+        const paymentId = pixModal?.payment?.paymentId;
+        if (!paymentId || pixModal?.payment?.status === 'approved') return;
+        let active = true;
+        const verify = async () => {
+            const result = await checkPixPaymentStatus(paymentId);
+            if (!active || !result.success || !result.status) return;
+            if (result.approved) {
+                const approvedPayment = { ...pixModal.payment, status: 'approved', paidAt: result.paidAt };
+                setPixPayments(prev => ({ ...prev, [pixModal.order.id]: approvedPayment }));
+                setPixModal({ order: pixModal.order, payment: approvedPayment });
+                showToast.success('Pagamento PIX confirmado!');
+                void fetchData();
+            }
+        };
+        void verify();
+        const interval = window.setInterval(verify, 3000);
+        return () => {
+            active = false;
+            window.clearInterval(interval);
+        };
+    }, [pixModal?.payment?.paymentId, pixModal?.payment?.status, checkPixPaymentStatus]);
 
     const getToken = () => {
         try { return JSON.parse(localStorage.getItem('gtec-session'))?.token || ''; }
@@ -132,11 +167,12 @@ const ServiceOrdersManager = () => {
 
     const fetchData = async () => {
         try {
-            const [ordersRes, custRes, prodRes, servRes] = await Promise.all([
+            const [ordersRes, custRes, prodRes, servRes, integrationsRes] = await Promise.all([
                 fetch(`/api/store/${tenant.storeSlug}/service_orders`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/customers`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/products`, { headers }),
-                fetch(`/api/store/${tenant.storeSlug}/services`, { headers })
+                fetch(`/api/store/${tenant.storeSlug}/services`, { headers }),
+                fetch(`/api/store/${tenant.storeSlug}/integrations`, { headers })
             ]);
 
             if (ordersRes.ok) setOrders(await ordersRes.json());
@@ -144,6 +180,8 @@ const ServiceOrdersManager = () => {
             
             const prods = prodRes.ok ? await prodRes.json() : [];
             const servs = servRes.ok ? await servRes.json() : [];
+            const integrations = integrationsRes.ok ? await integrationsRes.json() : [];
+            setMpConfigured(integrations.some((item: any) => item.id === 'mercadopago' && item.accessToken));
             
             setInventory([
                 ...prods.map(p => ({ ...p, _type: 'Produto', _label: `[Produto] ${p.name} - R$ ${Number(p.price).toLocaleString('pt-BR', {minimumFractionDigits: 2})}` })),
@@ -200,9 +238,9 @@ const ServiceOrdersManager = () => {
         const custId = e.target.value;
         const cust = customers.find(c => c.id === custId);
         if (cust) {
-            setFormData({ ...formData, customerId: cust.id, clientName: cust.name, clientPhone: cust.phone || '' });
+            setFormData({ ...formData, customerId: cust.id, clientName: cust.name, clientPhone: cust.phone || '', clientEmail: cust.email || '' });
         } else {
-            setFormData({ ...formData, customerId: '', clientName: '', clientPhone: '' });
+            setFormData({ ...formData, customerId: '', clientName: '', clientPhone: '', clientEmail: '' });
         }
     };
 
@@ -257,6 +295,7 @@ const ServiceOrdersManager = () => {
             customerId: order.customerId || '',
             clientName: order.clientName || '',
             clientPhone: order.clientPhone || '',
+            clientEmail: order.clientEmail || '',
             device: order.device || '',
             devicePassword: order.devicePassword || '',
             issueDescription: order.issueDescription || '',
@@ -300,6 +339,7 @@ const ServiceOrdersManager = () => {
             customerId: formData.customerId,
             clientName: formData.clientName,
             clientPhone: formData.clientPhone,
+            clientEmail: formData.clientEmail,
             device: formData.device,
             devicePassword: formData.devicePassword,
             issueDescription: formData.issueDescription,
@@ -332,7 +372,7 @@ const ServiceOrdersManager = () => {
 
     const resetForm = () => {
         setFormData({
-            customerId: '', clientName: '', clientPhone: '', device: '', devicePassword: '',
+            customerId: '', clientName: '', clientPhone: '', clientEmail: '', device: '', devicePassword: '',
             issueDescription: '', technicalReport: '', warranty: '', status: 'Aberta', items: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
         });
         setSelectedItem('');
@@ -343,14 +383,54 @@ const ServiceOrdersManager = () => {
     const printOrder = async (order) => {
         try {
             const payableTotal = resolveOrderTotal(order);
-            // Generate PIX
+            // Com Mercado Pago ativo, nunca mistura a cobrança com a chave PIX fixa.
             const txid = `OS${order.id.substring(0,10).replace(/[^A-Za-z0-9]/g, '').toUpperCase()}`;
-            const pixPayload = generatePixPayload(tenant.pixKey, tenant.pixName, tenant.city || 'Manaus', payableTotal, txid);
+            let mercadoPagoPix = pixPayments[order.id]?.qrCode;
+            if (mpConfigured && order.paymentStatus !== 'Pago' && !mercadoPagoPix) {
+                const customer = customers.find((item: any) => item.id === order.customerId);
+                const payerEmail = order.clientEmail || customer?.email;
+                if (!payerEmail) {
+                    showToast.error('Informe o e-mail do cliente antes de gerar o PDF com PIX.');
+                    return;
+                }
+                const result = await generatePixPayment({
+                    amount: payableTotal,
+                    description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} #${String(order.id || '').slice(0, 8).toUpperCase()}`,
+                    payerEmail,
+                    payerName: order.clientName,
+                    externalReference: order.id,
+                    referenceType: 'service_order',
+                });
+                if (!result.success || !result.qrCode) return;
+                const payment = { ...result, status: 'pending' };
+                mercadoPagoPix = result.qrCode;
+                setPixPayments(prev => ({ ...prev, [order.id]: payment }));
+            }
+            const pixPayload = mpConfigured
+                ? (mercadoPagoPix || null)
+                : generatePixPayload(tenant.pixKey, tenant.pixName, tenant.city || 'Manaus', payableTotal, txid);
 
             const isVenda = order.orderType === 'Venda Direta';
-            const termsText = (['Aprovada', 'Concluída', 'Entregue'].includes(order.status) || isVenda)
+            const termsText = !isVenda && order.paymentStatus !== 'Pago' && ['Aprovada', 'Concluída', 'Entregue'].includes(order.status)
                 ? 'TERMO DE CONFISSÃO DE DÍVIDA: O atraso no pagamento sujeitará o cliente ao pagamento de multa moratória fixa de 6% (seis por cento) sobre o valor devido, juros moratórios de 3% (três por cento) ao mês cobrados pro rata die, suspensão da prestação dos serviços após 15 (quinze) dias de atraso e encaminhamento do débito a Cartório de Protesto.'
                 : '';
+
+            const itemRows = (order.items || []).map(item => [
+                item.type || '-',
+                item.name || '-',
+                String(item.qty || 1),
+                `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                `R$ ${(Number(item.price || 0) * (item.qty || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+            ]);
+            if (itemRows.length === 0) {
+                itemRows.push([
+                    isVenda ? 'Venda' : 'Serviço',
+                    'Valor informado manualmente',
+                    '1',
+                    `R$ ${payableTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                    `R$ ${payableTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                ]);
+            }
 
             const documentInfo = [
                 { label: 'Data:', value: new Date(order.createdAt).toLocaleDateString('pt-BR') },
@@ -374,13 +454,7 @@ const ServiceOrdersManager = () => {
                 ],
                 documentInfo,
                 tableColumns: ['Tipo', 'Item', 'Qtd', 'V. Unit', 'Total'],
-                tableRows: (order.items || []).map(item => [
-                    item.type || '-',
-                    item.name || '-',
-                    String(item.qty || 1),
-                    `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
-                    `R$ ${(Number(item.price || 0) * (item.qty || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
-                ]),
+                tableRows: itemRows,
                 totalLabel: 'TOTAL A PAGAR:',
                 totalValue: payableTotal,
                 terms: termsText,
@@ -628,6 +702,20 @@ const ServiceOrdersManager = () => {
                                     onChange={handleChange} 
                                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all" 
                                     required 
+                                />
+                            </div>
+                            <div className="md:col-span-3">
+                                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                                    E-mail do cliente {formData.orderType === 'Venda Direta' ? '*' : ''}
+                                </label>
+                                <input
+                                    type="email"
+                                    name="clientEmail"
+                                    placeholder="cliente@email.com — necessário para gerar PIX pelo Mercado Pago"
+                                    value={formData.clientEmail}
+                                    onChange={handleChange}
+                                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                                    required={formData.orderType === 'Venda Direta' && mpConfigured}
                                 />
                             </div>
                         </div>
@@ -900,19 +988,19 @@ const ServiceOrdersManager = () => {
                                         </td>
                                         <td className="py-4 px-5 text-right">
                                             <div className="flex items-center justify-end gap-1">
-                                                {order.paymentStatus === 'Pago' ? null : mpLinks[order.id] ? (
+                                                {order.paymentStatus === 'Pago' ? null : pixPayments[order.id]?.qrCode ? (
                                                     <button
-                                                        onClick={() => copyLinkToClipboard(mpLinks[order.id])}
+                                                        onClick={() => setPixModal({ order, payment: pixPayments[order.id] })}
                                                         className="p-2 text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-all"
-                                                        title="Copiar link de pagamento"
+                                                        title="Exibir QR Code PIX"
                                                     >
-                                                        <Copy size={14} />
+                                                        <QrCode size={14} />
                                                     </button>
                                                 ) : (
                                                     <button
                                                         onClick={() => handleMPPayment(order)}
                                                         className="p-2 text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-all"
-                                                        title="Gerar Link Mercado Pago"
+                                                        title="Gerar QR Code PIX pelo Mercado Pago"
                                                     >
                                                         <CreditCard size={14} />
                                                     </button>
@@ -954,6 +1042,47 @@ const ServiceOrdersManager = () => {
                     </table>
                 </div>
             </div>
+
+            {pixModal && (
+                <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPixModal(null)}>
+                    <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl" onClick={event => event.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-5">
+                            <div>
+                                <h3 className="text-xl font-bold text-white">PIX da venda #{String(pixModal.order.id).slice(0, 8).toUpperCase()}</h3>
+                                <p className="text-sm text-slate-400">{pixModal.order.clientName} — R$ {resolveOrderTotal(pixModal.order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                            </div>
+                            <button onClick={() => setPixModal(null)} className="p-2 text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+                        </div>
+
+                        {pixModal.payment.status === 'approved' ? (
+                            <div className="py-10 text-center rounded-xl border border-emerald-400/30 bg-emerald-500/10">
+                                <CheckCircle className="w-20 h-20 mx-auto text-emerald-400 mb-4" />
+                                <p className="text-2xl font-bold text-emerald-400">Pagamento confirmado!</p>
+                                <p className="text-sm text-slate-300 mt-2">A venda foi baixada automaticamente.</p>
+                            </div>
+                        ) : (
+                            <div className="grid gap-5 sm:grid-cols-[210px_1fr]">
+                                <div className="bg-white rounded-xl p-3">
+                                    <img src={`data:image/png;base64,${pixModal.payment.qrCodeBase64}`} alt="QR Code PIX" className="w-full aspect-square object-contain" />
+                                </div>
+                                <div className="min-w-0 space-y-3">
+                                    <p className="font-semibold text-emerald-400">Aguardando pagamento</p>
+                                    <p className="text-xs text-slate-400">A confirmação será consultada automaticamente.</p>
+                                    <textarea readOnly value={pixModal.payment.qrCode} className="w-full h-28 resize-none rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-slate-300 font-mono" />
+                                    <div className="flex flex-wrap gap-2">
+                                        <button onClick={() => copyLinkToClipboard(pixModal.payment.qrCode)} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm flex items-center gap-2">
+                                            <Copy className="w-4 h-4" /> Copiar PIX
+                                        </button>
+                                        {pixModal.payment.ticketUrl && <a href={pixModal.payment.ticketUrl} target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm flex items-center gap-2">
+                                            <ExternalLink className="w-4 h-4" /> Abrir pagamento
+                                        </a>}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

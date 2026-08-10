@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Building2, Check, Copy, ExternalLink, Image, Link2, Palette, Save, QrCode } from 'lucide-react';
 import { useData } from '../../hooks/useData';
 import { showToast } from '../../utils/toast';
@@ -12,8 +12,12 @@ const themePresets = [
 
 const TenantSettings = () => {
     const { tenant, updateTenant } = useData();
-    const [settings, setSettings] = useState(tenant);
+    const [settings, setSettings] = useState(tenant || {});
     const [copied, setCopied] = useState(false);
+
+    useEffect(() => {
+        if (tenant) setSettings(tenant);
+    }, [tenant]);
 
     const publicUrl = useMemo(() => {
         if (settings.customDomain) {
@@ -160,7 +164,7 @@ const TenantSettings = () => {
 
                 <Section title="Recebimentos / PIX" icon={QrCode}>
                     <p className="text-slate-400 text-sm mb-5 leading-relaxed">
-                        Configure sua chave PIX para gerar QR Codes automáticos nas faturas e contratos.
+                        Esta chave fixa é usada somente quando o Mercado Pago não estiver configurado. Com a integração ativa, cada venda gera um PIX próprio e conciliável.
                     </p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <Field label="Chave PIX (CPF/CNPJ, E-mail, Celular ou Aleatória)">

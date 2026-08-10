@@ -164,14 +164,17 @@ export default function Integrations() {
                     <div className="max-w-2xl">
                         <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
                             <MessageCircle className="w-5 h-5 mr-3 text-emerald-500" />
-                            Integração Oficial com WhatsApp
+                            Conexão experimental com WhatsApp
                         </h2>
+                        <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+                            Esta conexão por QR Code não usa a API oficial da Meta. Não recomendamos vincular o número principal da empresa nem enviar documentos de clientes por este canal. Para envio automático e seguro de PDFs, configure futuramente a API oficial do WhatsApp Business.
+                        </div>
                         
                         <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50 mb-8">
                             <div className="flex items-center justify-between mb-6">
                                 <div>
                                     <h3 className="text-lg font-medium text-slate-200">Status da Conexão</h3>
-                                    <p className="text-sm text-slate-400 mt-1">Conecte seu celular para enviar recibos e cobranças automaticamente.</p>
+                                    <p className="text-sm text-slate-400 mt-1">Recurso experimental para mensagens de texto. O envio automático de PDF ainda não está habilitado.</p>
                                 </div>
                                 <div className={`px-4 py-1.5 rounded-full text-sm font-medium ${
                                     waStatus === 'connected' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :

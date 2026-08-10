@@ -624,20 +624,45 @@ app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreA
 
         const payment = await getMPPayment(mpConfig.accessToken, paymentId);
         const status = String(payment.status || 'unknown');
+        const paymentMethod = String(payment.payment_method_id || '');
+        const paidAmount = Number(payment.transaction_amount) || 0;
+        const paidAt = payment.date_approved || new Date().toISOString();
         const transactions = await listStoreRecords(slug, 'payment_transactions') || [];
         const transaction = transactions.find((item: any) => String(item.paymentId || item.id) === paymentId);
         if (transaction) {
+            let reconciliationStatus = status === 'approved' && transaction.referenceType === 'test'
+                ? 'completed'
+                : transaction.reconciliationStatus;
+
+            if (status === 'approved' && paymentMethod === 'pix' && transaction.referenceType === 'service_order') {
+                const expectedAmount = Number(transaction.expectedAmount) || 0;
+                if (expectedAmount > 0 && Math.abs(expectedAmount - paidAmount) <= 0.01) {
+                    const orders = await listStoreRecords(slug, 'service_orders') || [];
+                    const order = orders.find((item: any) => item.id === transaction.externalReference);
+                    if (order) {
+                        await upsertStoreRecord(slug, 'service_orders', {
+                            ...order,
+                            paymentStatus: 'Pago',
+                            paid: true,
+                            paidAt,
+                            paidValue: paidAmount,
+                            paymentMethod: 'Pix / Mercado Pago',
+                            mercadoPagoPaymentId: paymentId,
+                        });
+                        reconciliationStatus = 'completed';
+                    }
+                }
+            }
+
             await upsertStoreRecord(slug, 'payment_transactions', {
                 ...transaction,
                 paymentId,
                 status,
                 paymentStatus: status,
-                paymentMethod: String(payment.payment_method_id || ''),
-                paidAmount: Number(payment.transaction_amount) || 0,
-                paidAt: payment.date_approved || transaction.paidAt,
-                reconciliationStatus: status === 'approved' && transaction.referenceType === 'test'
-                    ? 'completed'
-                    : transaction.reconciliationStatus,
+                paymentMethod,
+                paidAmount,
+                paidAt: status === 'approved' ? paidAt : transaction.paidAt,
+                reconciliationStatus,
                 updatedAt: new Date().toISOString(),
             });
         }
@@ -647,8 +672,8 @@ app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreA
             status,
             statusDetail: String(payment.status_detail || ''),
             approved: status === 'approved',
-            paymentMethod: String(payment.payment_method_id || ''),
-            paidAmount: Number(payment.transaction_amount) || 0,
+            paymentMethod,
+            paidAmount,
             paidAt: payment.date_approved || null,
         });
     } catch (error: any) {
