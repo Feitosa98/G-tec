@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: gtec
-      POSTGRES_PASSWORD: ${GTEC_DB_PASSWORD:-gtec_local_change_me}
+      POSTGRES_PASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
       POSTGRES_DB: gtec_control
     volumes:
       - gtec_postgres_data:/var/lib/postgresql/data
@@ -30,16 +30,30 @@ services:
       PGHOST: db
       PGPORT: 5432
       PGUSER: gtec
-      PGPASSWORD: ${GTEC_DB_PASSWORD:-gtec_local_change_me}
+      PGPASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
       PGDATABASE: gtec_control
       SAAS_ADMIN_USER: ${SAAS_ADMIN_USER:-gestor}
-      SAAS_ADMIN_PASSWORD: ${SAAS_ADMIN_PASSWORD:-admin123}
-      SAAS_TOKEN_SECRET: ${SAAS_TOKEN_SECRET:-local-token-secret-change-me}
-      DEFAULT_STORE_ADMIN_PASSWORD: ${DEFAULT_STORE_ADMIN_PASSWORD:-admin123}
+      SAAS_ADMIN_PASSWORD: ${SAAS_ADMIN_PASSWORD:?Defina SAAS_ADMIN_PASSWORD}
+      SAAS_TOKEN_SECRET: ${SAAS_TOKEN_SECRET:?Defina SAAS_TOKEN_SECRET}
+      DEFAULT_STORE_ADMIN_PASSWORD: ${DEFAULT_STORE_ADMIN_PASSWORD:?Defina DEFAULT_STORE_ADMIN_PASSWORD}
     ports:
       - "8081:3000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gtec-saas.rule=Host(`sistema.feitosasolucoes.com.br`)"
+      - "traefik.http.routers.gtec-saas.entrypoints=websecure"
+      - "traefik.http.routers.gtec-saas.tls=true"
+      - "traefik.http.routers.gtec-saas.tls.certresolver=letsencrypt"
+      - "traefik.http.services.gtec-saas.loadbalancer.server.port=3000"
+    networks:
+      - default
+      - traefik-proxy
     security_opt:
       - no-new-privileges:true
 
 volumes:
   gtec_postgres_data:
+
+networks:
+  traefik-proxy:
+    external: true

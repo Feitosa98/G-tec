@@ -1,0 +1,24 @@
+{
+  "name": "G-TEC Sistema",
+  "short_name": "G-TEC",
+  "description": "Sistema de Gestão para Assistências Técnicas e Lojas de Informática",
+  "start_url": "/admin",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#1e293b",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "categories": ["business", "productivity"],
+  "screenshots": []
+}

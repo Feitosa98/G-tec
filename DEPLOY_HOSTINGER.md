@@ -1,6 +1,6 @@
 # Publicação na Hostinger com Docker
 
-A aplicação usa dois contêineres: a API/web em Node.js e o PostgreSQL. A porta pública é `8081` e os dados ficam no volume persistente `gtec_postgres_data`.
+A aplicação usa dois contêineres: a API/web em Node.js e o PostgreSQL. O acesso principal é `https://sistema.feitosasolucoes.com.br`; a porta `8081` permanece disponível somente para diagnóstico. Os dados ficam no volume persistente `gtec_postgres_data`.
 
 ## Variáveis obrigatórias
 
@@ -22,7 +22,7 @@ Não publique o arquivo `.env` no Git. A área reservada fica em `/gestor-saas` 
 2. Use **Compose a partir de URL** com `docker-compose.hostinger.yml`.
 3. Preencha as variáveis de ambiente antes da implantação.
 4. Aguarde os serviços `db` e `web` ficarem saudáveis.
-5. Acesse `http://IP-DO-VPS:8081`.
+5. Acesse `https://sistema.feitosasolucoes.com.br`.
 
 ## Isolamento SaaS
 
@@ -33,7 +33,7 @@ Não publique o arquivo `.env` no Git. A área reservada fica em `/gestor-saas` 
 
 ## Domínio e HTTPS
 
-Crie um registro DNS `A` para o IP do VPS e configure Traefik ou outro proxy reverso apontando para o serviço `web` na porta interna `3000`. Ative um certificado Let's Encrypt.
+O projeto participa da rede externa `traefik-proxy` e possui as regras do Traefik para `sistema.feitosasolucoes.com.br`. Crie um registro DNS `A` com nome `sistema` apontando para `31.97.246.38`. Se o DNS estiver no Cloudflare, deixe o registro como **Somente DNS** durante a primeira emissão do certificado; depois ele pode voltar a ser proxy.
 
 ## Atualização e diagnóstico
 
