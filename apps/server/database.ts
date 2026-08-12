@@ -296,8 +296,8 @@ export const updateTenantBySlug = async (slug: string, input: any) => {
     
     const allowedFields = [
         'businessName', 'shortName', 'logoUrl', 'document', 'email', 'billingEmail', 'whatsapp', 'phone',
-        'street', 'addressNumber', 'neighborhood', 'city', 'state', 'postalCode', 'address', 'customDomain',
-        'primaryColor', 'accentColor', 'backgroundColor', 'cardColor', 'pixKey', 'pixName'
+        'street', 'addressNumber', 'neighborhood', 'city', 'state', 'postalCode', 'address',
+        'primaryColor', 'accentColor', 'pixKey', 'pixName'
     ];
     const safeInput = Object.fromEntries(Object.entries(input).filter(([key]) => allowedFields.includes(key)));
     const profile = { ...current[0].profile as any, ...safeInput, storeSlug: slug };

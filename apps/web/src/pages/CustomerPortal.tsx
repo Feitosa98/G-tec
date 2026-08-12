@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import { Search, CheckCircle, Clock, Wrench, XCircle, Package, RefreshCw } from 'lucide-react';
 
 const STATUS_CONFIG: Record<string, { color: string; icon: ReactElement; label: string }> = {
@@ -17,18 +17,42 @@ export default function CustomerPortal() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Pega o slug da URL atual — ex: /acompanhar?loja=minha-loja
     const params = new URLSearchParams(window.location.search);
-    const storeSlug = params.get('loja') || window.location.hostname.split('.')[0];
+    const explicitStoreSlug = params.get('loja') || '';
+    const [storeSlug, setStoreSlug] = useState(explicitStoreSlug);
+
+    useEffect(() => {
+        if (explicitStoreSlug) return;
+
+        const controller = new AbortController();
+        fetch('/api/tenants/resolve', { signal: controller.signal })
+            .then(response => response.ok ? response.json() : Promise.reject())
+            .then(tenant => setStoreSlug(tenant.storeSlug || ''))
+            .catch(error => {
+                if (error?.name !== 'AbortError') {
+                    setError('Não foi possível identificar a loja. Acesse o link enviado pela empresa.');
+                }
+            });
+
+        return () => controller.abort();
+    }, [explicitStoreSlug]);
 
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!searchInput.trim()) return;
+        const search = searchInput.trim();
+        if (search.length < 6) {
+            setError('Informe o número completo da O.S. ou telefone.');
+            return;
+        }
+        if (!storeSlug) {
+            setError('Não foi possível identificar a loja. Acesse o link enviado pela empresa.');
+            return;
+        }
         setLoading(true);
         setError(null);
         setResults(null);
         try {
-            const res = await fetch(`/api/public/${storeSlug}/os/${encodeURIComponent(searchInput.trim())}`);
+            const res = await fetch(`/api/public/${storeSlug}/os/${encodeURIComponent(search)}`);
             const data = await res.json();
             if (!res.ok) throw new Error(data.message || 'Erro ao buscar');
             setResults(data);
@@ -57,7 +81,7 @@ export default function CustomerPortal() {
                         Acompanhar Reparo
                     </h1>
                     <p className="text-slate-400 text-lg">
-                        Digite o número da sua O.S., nome ou telefone para ver o status do seu dispositivo.
+                        Digite o número da sua O.S. ou telefone para ver o status do seu dispositivo.
                     </p>
                 </div>
 
@@ -68,7 +92,7 @@ export default function CustomerPortal() {
                             type="text"
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
-                            placeholder="Ex: João Silva, (92) 99999-9999 ou código da O.S."
+                            placeholder="Ex: (92) 99999-9999 ou código da O.S."
                             className="w-full bg-slate-900/80 border border-slate-700/80 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl px-5 py-4 text-slate-100 placeholder-slate-500 outline-none transition-all text-base shadow-xl"
                         />
                     </div>

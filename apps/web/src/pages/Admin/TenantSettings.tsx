@@ -1,39 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Building2, Check, Copy, ExternalLink, Image, Link2, Palette, Save, QrCode } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Building2, Image, Palette, Save, QrCode } from 'lucide-react';
 import { useData } from '../../hooks/useData';
 import { showToast } from '../../utils/toast';
 import { formatBrazilianPhone } from '../../utils/phone';
 
-const themePresets = [
-    { name: 'Tecnologia', primaryColor: '#0052cc', accentColor: '#d4a024', backgroundColor: '#0a0e1a', cardColor: '#12182b' },
-    { name: 'Varejo', primaryColor: '#7c3aed', accentColor: '#f97316', backgroundColor: '#111827', cardColor: '#1f2937' },
-    { name: 'Elegante', primaryColor: '#0f766e', accentColor: '#fbbf24', backgroundColor: '#071a18', cardColor: '#102724' },
-    { name: 'Claro', primaryColor: '#2563eb', accentColor: '#ea580c', backgroundColor: '#1e293b', cardColor: '#334155' }
-];
-
 const TenantSettings = () => {
     const { tenant, updateTenant } = useData();
     const [settings, setSettings] = useState(tenant || {});
-    const [copied, setCopied] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
         if (tenant) setSettings({ ...tenant, whatsapp: formatBrazilianPhone(tenant.whatsapp) });
     }, [tenant]);
 
-    const publicUrl = useMemo(() => {
-        if (settings.customDomain) {
-            return settings.customDomain.startsWith('http') ? settings.customDomain : `https://${settings.customDomain}`;
-        }
-        return `${window.location.origin}${import.meta.env.BASE_URL}?loja=${settings.storeSlug}`;
-    }, [settings.customDomain, settings.storeSlug]);
-
     const handleChange = (event) => {
         const { name, value } = event.target;
         setSettings(current => ({
             ...current,
-            [name]: name === 'storeSlug'
-                ? value.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
-                : value
+            [name]: value
         }));
     };
 
@@ -63,22 +47,19 @@ const TenantSettings = () => {
 
     const handleSave = async (event) => {
         event.preventDefault();
-        if (!settings.businessName || !settings.shortName || !settings.storeSlug) {
-            showToast.error('Preencha o nome da empresa, nome curto e identificador do link.');
+        if (!settings.businessName?.trim() || !settings.shortName?.trim()) {
+            showToast.error('Preencha o nome da empresa e o nome curto.');
             return;
         }
+        setIsSaving(true);
         try {
             await updateTenant(settings);
-            showToast.success('Identidade da empresa atualizada.');
+            showToast.success('Dados da empresa atualizados.');
         } catch {
-            showToast.error('Não foi possível salvar a identidade no banco da loja.');
+            showToast.error('Não foi possível salvar os dados da empresa.');
+        } finally {
+            setIsSaving(false);
         }
-    };
-
-    const copyPublicUrl = async () => {
-        await navigator.clipboard.writeText(publicUrl);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
     };
 
     return (
@@ -88,7 +69,7 @@ const TenantSettings = () => {
                     Personalizar Empresa
                 </h1>
                 <p className="text-slate-400 text-sm sm:text-base font-normal">
-                    Configure a identidade visual e o endereço da loja para cada cliente do SaaS.
+                    Atualize os dados usados no sistema, nos documentos e nos recebimentos.
                 </p>
             </div>
 
@@ -99,7 +80,7 @@ const TenantSettings = () => {
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="businessName"
-                                value={settings.businessName}
+                                value={settings.businessName || ''}
                                 onChange={handleChange}
                             />
                         </Field>
@@ -107,7 +88,7 @@ const TenantSettings = () => {
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="shortName"
-                                value={settings.shortName}
+                                value={settings.shortName || ''}
                                 onChange={handleChange}
                                 maxLength={20}
                             />
@@ -116,7 +97,7 @@ const TenantSettings = () => {
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="document"
-                                value={settings.document}
+                                value={settings.document || ''}
                                 onChange={handleChange}
                             />
                         </Field>
@@ -125,7 +106,7 @@ const TenantSettings = () => {
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="email"
                                 type="email"
-                                value={settings.email}
+                                value={settings.email || ''}
                                 onChange={handleChange}
                             />
                         </Field>
@@ -136,7 +117,7 @@ const TenantSettings = () => {
                                 type="tel"
                                 inputMode="numeric"
                                 placeholder="(92) 99999-9999"
-                                value={settings.whatsapp}
+                                value={settings.whatsapp || ''}
                                 onChange={handlePhoneChange}
                                 maxLength={15}
                             />
@@ -145,7 +126,7 @@ const TenantSettings = () => {
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
                                 name="address"
-                                value={settings.address}
+                                value={settings.address || ''}
                                 onChange={handleChange}
                             />
                         </Field>
@@ -208,77 +189,23 @@ const TenantSettings = () => {
                     </div>
                 </Section>
 
-                <Section title="Tema" icon={Palette}>
-                    <div className="flex flex-wrap gap-3 mb-6">
-                        {themePresets.map(preset => (
-                            <button
-                                key={preset.name}
-                                type="button"
-                                onClick={() => setSettings(current => ({ ...current, ...preset }))}
-                                className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-medium text-white border transition-all duration-200 shadow-lg hover:scale-[1.02] active:scale-95 cursor-pointer"
-                                style={{ background: preset.cardColor, borderColor: preset.accentColor }}
-                            >
-                                <span className="w-3 h-3 rounded-full shadow-sm" style={{ background: preset.primaryColor }} />
-                                {preset.name}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-                        <ColorField label="Cor principal" name="primaryColor" value={settings.primaryColor} onChange={handleChange} />
-                        <ColorField label="Cor de destaque" name="accentColor" value={settings.accentColor} onChange={handleChange} />
-                        <ColorField label="Cor de fundo" name="backgroundColor" value={settings.backgroundColor} onChange={handleChange} />
-                        <ColorField label="Cor dos cartões" name="cardColor" value={settings.cardColor} onChange={handleChange} />
-                    </div>
-                </Section>
-
-                <Section title="Link da Loja" icon={Link2}>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-4">
-                        <Field label="Identificador do link">
-                            <input
-                                className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
-                                name="storeSlug"
-                                value={settings.storeSlug}
-                                onChange={handleChange}
-                            />
-                        </Field>
-                        <Field label="Domínio próprio (opcional)">
-                            <input
-                                className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
-                                name="customDomain"
-                                value={settings.customDomain}
-                                onChange={handleChange}
-                                placeholder="loja.suaempresa.com.br"
-                            />
-                        </Field>
-                    </div>
-                    <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 flex items-center gap-3 flex-wrap shadow-inner">
-                        <span className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                            <ExternalLink size={18} />
-                        </span>
-                        <code className="flex-1 min-w-[200px] text-sm font-mono text-slate-300 break-all select-all">
-                            {publicUrl}
-                        </code>
-                        <button
-                            type="button"
-                            onClick={copyPublicUrl}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all duration-200 active:scale-95 shadow-sm cursor-pointer ${
-                                copied
-                                    ? 'border border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
-                                    : 'border border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700 hover:text-white'
-                            }`}
-                        >
-                            {copied ? <Check size={16} /> : <Copy size={16} />}
-                            {copied ? 'Copiado' : 'Copiar'}
-                        </button>
+                <Section title="Cores da marca" icon={Palette}>
+                    <p className="text-slate-400 text-sm mb-5 leading-relaxed">
+                        Estas cores são usadas na tela de acesso da empresa.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <ColorField label="Cor principal" name="primaryColor" value={settings.primaryColor || '#2563eb'} onChange={handleChange} />
+                        <ColorField label="Cor de destaque" name="accentColor" value={settings.accentColor || '#f59e0b'} onChange={handleChange} />
                     </div>
                 </Section>
 
                 <div className="flex justify-end pt-4">
                     <button
                         type="submit"
+                        disabled={isSaving}
                         className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-indigo-500 to-blue-600 hover:from-indigo-600 hover:to-blue-700 text-white font-semibold text-sm shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 transition-all duration-200 active:scale-95 cursor-pointer"
                     >
-                        <Save size={18} /> Salvar personalização
+                        <Save size={18} /> {isSaving ? 'Salvando...' : 'Salvar alterações'}
                     </button>
                 </div>
             </form>
@@ -322,6 +249,8 @@ const ColorField = ({ label, name, value, onChange }) => (
                 name={name}
                 value={value}
                 onChange={onChange}
+                pattern="#[0-9a-fA-F]{6}"
+                maxLength={7}
             />
         </div>
     </Field>
