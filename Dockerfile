@@ -29,6 +29,11 @@ FROM node:22-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Identifica a revisao implantada e invalida a imagem antiga mantida pelo
+# gerenciador da VPS quando o codigo de producao muda.
+ARG BUILD_REVISION=dev
+LABEL com.feitosasolucoes.build-revision=${BUILD_REVISION}
+
 # Copy package files again to install only production dependencies
 COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/
