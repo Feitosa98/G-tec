@@ -41,15 +41,17 @@ const allowedCollections = new Map<string, any>([
     ['suppliers', schema.suppliers],
     ['stock_movements', schema.stockMovements],
     ['appointments', schema.appointments],
-    ['audit_log', schema.auditLogs]
+    ['audit_log', schema.auditLogs],
+    ['fiscal_documents', schema.fiscalDocuments]
 ]);
 
 const defaultProfile = {
-    businessName: 'GTEC Informática',
-    shortName: 'GTEC',
+    businessName: 'Feitosa Soluções em Informática',
+    legalName: 'IAGO DA SILVA FEITOSA',
+    shortName: 'Feitosa Soluções',
     storeSlug: 'gtec-informatica',
     logoUrl: '/logo.png',
-    document: '45.123.789/0001-90',
+    document: '35.623.245/0001-50',
     email: 'contato@gtecinformatica.com.br',
     billingEmail: '',
     whatsapp: '5592992800023',
@@ -69,6 +71,7 @@ const defaultProfile = {
 };
 
 const newTenantProfileDefaults = {
+    legalName: '',
     logoUrl: '',
     document: '',
     billingEmail: '',
@@ -149,6 +152,7 @@ export const ensureStoreDatabase = async (databaseName: string, admin: any = nul
         CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
         CREATE TABLE IF NOT EXISTS appointments (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
         CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
+        CREATE TABLE IF NOT EXISTS fiscal_documents (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
         CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, username TEXT UNIQUE NOT NULL, email TEXT, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
     `);
 
@@ -204,6 +208,25 @@ export const initializeDatabases = async () => {
             databaseName,
             profile: defaultProfile
         });
+    } else {
+        const currentProfile = existingDefault[0].profile as any;
+        const usesLegacyBrand = ['GTEC Informática', 'G-TEC Informática'].includes(currentProfile.businessName)
+            || ['GTEC', 'G-TEC'].includes(currentProfile.shortName);
+        const usesPlaceholderFiscalData = !currentProfile.legalName || currentProfile.document === '45.123.789/0001-90';
+        if (usesLegacyBrand || usesPlaceholderFiscalData) {
+            await controlDb.update(schema.tenants)
+                .set({
+                    profile: {
+                        ...currentProfile,
+                        businessName: usesLegacyBrand ? defaultProfile.businessName : currentProfile.businessName,
+                        shortName: usesLegacyBrand ? defaultProfile.shortName : currentProfile.shortName,
+                        legalName: defaultProfile.legalName,
+                        document: defaultProfile.document,
+                    },
+                    updatedAt: new Date()
+                })
+                .where(eq(schema.tenants.id, existingDefault[0].id));
+        }
     }
 
     const allTenants = await controlDb.select().from(schema.tenants);
@@ -295,7 +318,7 @@ export const updateTenantBySlug = async (slug: string, input: any) => {
     if (current.length === 0) return null;
     
     const allowedFields = [
-        'businessName', 'shortName', 'logoUrl', 'document', 'email', 'billingEmail', 'whatsapp', 'phone',
+        'businessName', 'legalName', 'shortName', 'logoUrl', 'document', 'email', 'billingEmail', 'whatsapp', 'phone',
         'street', 'addressNumber', 'neighborhood', 'city', 'state', 'postalCode', 'address',
         'primaryColor', 'accentColor', 'pixKey', 'pixName'
     ];
@@ -350,6 +373,25 @@ export const upsertStoreRecord = async (slug: string, collection: string, data: 
     });
     
     return record;
+};
+
+export const reserveNfseDpsNumber = async (slug: string) => {
+    const databaseName = await getTenantDatabase(slug);
+    if (!databaseName) return null;
+    const pool = storePools.get(databaseName) || (getStoreDb(databaseName) && storePools.get(databaseName));
+    const result = await pool.query(`
+        UPDATE integrations
+        SET data = jsonb_set(
+                data,
+                '{nextDps}',
+                to_jsonb(COALESCE(NULLIF(data->>'nextDps', '')::bigint, 1) + 1),
+                true
+            ),
+            updated_at = NOW()
+        WHERE id = 'nfse'
+        RETURNING (data->>'nextDps')::bigint - 1 AS number
+    `);
+    return result.rows[0]?.number ? Number(result.rows[0].number) : null;
 };
 
 export const deleteStoreRecord = async (slug: string, collection: string, id: string) => {

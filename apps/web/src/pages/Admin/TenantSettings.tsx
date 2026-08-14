@@ -84,6 +84,15 @@ const TenantSettings = () => {
                                 onChange={handleChange}
                             />
                         </Field>
+                        <Field label="Razão social">
+                            <input
+                                className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"
+                                name="legalName"
+                                value={settings.legalName || ''}
+                                onChange={handleChange}
+                                placeholder="Nome empresarial registrado no CNPJ"
+                            />
+                        </Field>
                         <Field label="Nome curto">
                             <input
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all duration-200 shadow-inner hover:border-slate-700"

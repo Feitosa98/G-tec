@@ -7,7 +7,7 @@ export const products = [
         promoPrice: 8499.00, // Promotion
         category: "Gamer",
         department: "Notebooks",
-        brand: "GTEC",
+        brand: "Feitosa Soluções",
         specs: {
             cpu: "Intel i9-13900HX",
             gpu: "RTX 4070 8GB",

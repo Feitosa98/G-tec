@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gtec-v1';
+const CACHE_NAME = 'feitosa-solucoes-v2';
 const STATIC_ASSETS = [
     '/',
     '/admin',

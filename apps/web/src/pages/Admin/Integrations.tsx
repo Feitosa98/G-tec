@@ -3,7 +3,7 @@ import { useData } from '../../hooks/useData';
 import { useAuthStore } from '../../store/authStore';
 import { storeRequest } from '../../utils/api';
 import toast from 'react-hot-toast';
-import { Mail, MessageCircle, Send, QrCode, PowerOff, Save, RefreshCw, CreditCard } from 'lucide-react';
+import { Mail, MessageCircle, Send, QrCode, PowerOff, Save, RefreshCw, CreditCard, ShieldCheck, Upload, Wifi } from 'lucide-react';
 import MercadoPagoPage from './MercadoPagoPage';
 
 const defaultWaTemplates = {
@@ -17,10 +17,18 @@ const defaultWaTemplates = {
     serviceCompleted: 'Olá, {cliente}! Sua ordem de serviço #{numero} foi concluída e está pronta para retirada. Valor: R$ {valor}. Obrigado pela preferência!',
 };
 
+const defaultNfseForm = {
+    municipalRegistration: '', municipalityCode: '1302603', dpsSeries: 1, nextDps: 1,
+    nationalServiceCode: '', municipalServiceCode: '', simpleNationalStatus: 1,
+    simpleNationalTaxRegime: 1, specialTaxRegime: 0, issTaxation: 1, issWithholding: 1,
+    enabled: false, certificateConfigured: false, certificateSubject: '', certificateValidTo: '',
+    lastConnectionAt: '', lastConnectionStatus: '',
+};
+
 export default function Integrations() {
     const { tenant } = useData();
     const token = useAuthStore(state => state.user?.token || '');
-    const [activeTab, setActiveTab] = useState<'whatsapp' | 'telegram' | 'email' | 'mercadopago'>('whatsapp');
+    const [activeTab, setActiveTab] = useState<'whatsapp' | 'telegram' | 'email' | 'mercadopago' | 'nfse'>('whatsapp');
 
     const [emailForm, setEmailForm] = useState({ host: '', port: '', user: '', pass: '', from: '' });
     const [telegramForm, setTelegramForm] = useState({ token: '', defaultChatId: '' });
@@ -33,6 +41,12 @@ export default function Integrations() {
     const [isPollingWa, setIsPollingWa] = useState(false);
     const [waTemplates, setWaTemplates] = useState(defaultWaTemplates);
     const [savingWaTemplates, setSavingWaTemplates] = useState(false);
+    const [nfseForm, setNfseForm] = useState(defaultNfseForm);
+    const [nfseCertificate, setNfseCertificate] = useState('');
+    const [nfseCertificateName, setNfseCertificateName] = useState('');
+    const [nfseCertificatePassword, setNfseCertificatePassword] = useState('');
+    const [savingNfse, setSavingNfse] = useState(false);
+    const [testingNfse, setTestingNfse] = useState(false);
 
     useEffect(() => {
         if (!tenant?.storeSlug || !token) return;
@@ -46,6 +60,10 @@ export default function Integrations() {
             .then(res => res.ok ? res.json() : Promise.reject())
             .then(data => setWaTemplates({ ...defaultWaTemplates, ...data }))
             .catch(() => toast.error('Não foi possível carregar as mensagens do WhatsApp.'));
+        fetch(`/api/store/${tenant.storeSlug}/nfse/config`, { headers: { 'Authorization': `Bearer ${token}` } })
+            .then(async res => res.ok ? res.json() : Promise.reject(await res.json()))
+            .then(data => setNfseForm({ ...defaultNfseForm, ...data }))
+            .catch(() => undefined);
     }, [tenant?.storeSlug, token]);
 
     const fetchWaStatus = async () => {
@@ -144,6 +162,75 @@ export default function Integrations() {
         } finally { setLoadingTelegram(false); }
     };
 
+    const handleNfseCertificate = (file?: File) => {
+        if (!file) return;
+        if (!/\.(pfx|p12)$/i.test(file.name)) {
+            toast.error('Selecione um certificado A1 no formato .pfx ou .p12.');
+            return;
+        }
+        if (file.size > 2_000_000) {
+            toast.error('O certificado deve ter no máximo 2 MB.');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            setNfseCertificate(String(reader.result || '').split(',')[1] || '');
+            setNfseCertificateName(file.name);
+        };
+        reader.readAsDataURL(file);
+    };
+
+    const handleSaveNfse = async (event: React.FormEvent) => {
+        event.preventDefault();
+        if (!tenant?.storeSlug) return;
+    if (nfseForm.enabled && !nfseForm.certificateConfigured && !nfseCertificate) {
+            toast.error('Selecione o certificado digital A1.');
+            return;
+        }
+        if (nfseCertificate && !nfseCertificatePassword) {
+            toast.error('Informe a senha do novo certificado A1.');
+            return;
+        }
+        setSavingNfse(true);
+        try {
+            const response = await fetch(`/api/store/${tenant.storeSlug}/nfse/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ ...nfseForm, certificateBase64: nfseCertificate || undefined, certificatePassword: nfseCertificatePassword || undefined }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Não foi possível salvar a configuração fiscal.');
+            setNfseForm({ ...defaultNfseForm, ...data });
+            setNfseCertificate('');
+            setNfseCertificateName('');
+            setNfseCertificatePassword('');
+            toast.success('Configuração da NFS-e em homologação salva.');
+        } catch (error: any) {
+            toast.error(error.message);
+        } finally {
+            setSavingNfse(false);
+        }
+    };
+
+    const handleTestNfse = async () => {
+        if (!tenant?.storeSlug) return;
+        setTestingNfse(true);
+        try {
+            const response = await fetch(`/api/store/${tenant.storeSlug}/nfse/test-connection`, {
+                method: 'POST', headers: { 'Authorization': `Bearer ${token}` },
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Falha na conexão com a SEFIN Nacional.');
+            setNfseForm(current => ({ ...current, lastConnectionStatus: 'connected', lastConnectionAt: new Date().toISOString() }));
+            toast.success('Conexão com a homologação da NFS-e Nacional confirmada.');
+        } catch (error: any) {
+            setNfseForm(current => ({ ...current, lastConnectionStatus: 'failed', lastConnectionAt: new Date().toISOString() }));
+            toast.error(error.message);
+        } finally {
+            setTestingNfse(false);
+        }
+    };
+
     return (
         <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-8 fade-in">
             <header className="mb-8">
@@ -151,7 +238,7 @@ export default function Integrations() {
                     Integrações
                 </h1>
                 <p className="text-slate-400 mt-2 text-lg">
-                    Conecte o G-TEC aos seus canais de comunicação favoritos
+                    Conecte a Feitosa Soluções aos seus canais de comunicação favoritos
                 </p>
             </header>
 
@@ -191,6 +278,15 @@ export default function Integrations() {
                 >
                     <CreditCard className="w-4 h-4" />
                     <span>Mercado Pago</span>
+                </button>
+                <button
+                    onClick={() => setActiveTab('nfse')}
+                    className={`pb-4 px-4 text-sm font-medium transition-colors flex items-center space-x-2 ${
+                        activeTab === 'nfse' ? 'border-b-2 border-cyan-500 text-cyan-400' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>NFS-e (Homologação)</span>
                 </button>
             </div>
 
@@ -384,6 +480,108 @@ export default function Integrations() {
                 )}
                 {activeTab === 'mercadopago' && (
                     <MercadoPagoPage />
+                )}
+                {activeTab === 'nfse' && (
+                    <form onSubmit={handleSaveNfse} className="max-w-4xl space-y-6">
+                        <div>
+                            <h2 className="text-xl font-semibold text-white flex items-center gap-3">
+                                <ShieldCheck className="w-5 h-5 text-cyan-400" /> NFS-e Nacional
+                            </h2>
+                            <p className="mt-2 text-sm text-slate-400">Configuração do emissor próprio para serviços da empresa.</p>
+                        </div>
+                        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+                            Ambiente oficial de homologação (produção restrita). Os documentos enviados servem apenas para testes e não têm validade fiscal.
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Inscrição Municipal</span>
+                                <input required maxLength={15} value={nfseForm.municipalRegistration} onChange={e => setNfseForm({ ...nfseForm, municipalRegistration: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Código IBGE do município</span>
+                                <input required pattern="\d{7}" value={nfseForm.municipalityCode} onChange={e => setNfseForm({ ...nfseForm, municipalityCode: e.target.value.replace(/\D/g, '').slice(0, 7) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                                <span className="block text-xs text-slate-500">Manaus: 1302603</span>
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Código de tributação nacional (6 dígitos)</span>
+                                <input required pattern="\d{6}" value={nfseForm.nationalServiceCode} onChange={e => setNfseForm({ ...nfseForm, nationalServiceCode: e.target.value.replace(/\D/g, '').slice(0, 6) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                                <span className="block text-xs text-slate-500">Código padrão usado nas ordens de serviço durante o teste.</span>
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Código municipal (opcional, até 3 dígitos)</span>
+                                <input pattern="\d{0,3}" value={nfseForm.municipalServiceCode} onChange={e => setNfseForm({ ...nfseForm, municipalServiceCode: e.target.value.replace(/\D/g, '').slice(0, 3) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Série da DPS</span>
+                                <input required type="number" min={1} max={49999} value={nfseForm.dpsSeries} onChange={e => setNfseForm({ ...nfseForm, dpsSeries: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Próximo número da DPS</span>
+                                <input required type="number" min={1} value={nfseForm.nextDps} onChange={e => setNfseForm({ ...nfseForm, nextDps: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Opção pelo Simples Nacional</span>
+                                <select value={nfseForm.simpleNationalStatus} onChange={e => setNfseForm({ ...nfseForm, simpleNationalStatus: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200">
+                                    <option value={1}>Não optante</option><option value={2}>Optante - MEI</option><option value={3}>Optante - ME/EPP</option>
+                                </select>
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Regime especial de tributação</span>
+                                <select value={nfseForm.specialTaxRegime} onChange={e => setNfseForm({ ...nfseForm, specialTaxRegime: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200">
+                                    <option value={0}>Nenhum</option><option value={1}>Ato cooperado</option><option value={2}>Estimativa</option><option value={3}>Microempresa municipal</option><option value={4}>Notário ou registrador</option><option value={5}>Profissional autônomo</option><option value={6}>Sociedade de profissionais</option><option value={9}>Outros</option>
+                                </select>
+                            </label>
+                            {nfseForm.simpleNationalStatus === 3 && (
+                                <label className="space-y-2 text-sm text-slate-300">
+                                    <span>Apuração do Simples Nacional</span>
+                                    <select value={nfseForm.simpleNationalTaxRegime} onChange={e => setNfseForm({ ...nfseForm, simpleNationalTaxRegime: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200">
+                                        <option value={1}>Tributos federal e municipal pelo Simples</option><option value={2}>Federal pelo Simples e ISS fora</option><option value={3}>Tributos fora do Simples</option>
+                                    </select>
+                                </label>
+                            )}
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Tributação do ISSQN</span>
+                                <select value={nfseForm.issTaxation} onChange={e => setNfseForm({ ...nfseForm, issTaxation: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200">
+                                    <option value={1}>Operação tributável</option><option value={2}>Exportação de serviço</option><option value={3}>Não incidência</option><option value={4}>Imunidade</option>
+                                </select>
+                            </label>
+                            <label className="space-y-2 text-sm text-slate-300">
+                                <span>Retenção do ISSQN</span>
+                                <select value={nfseForm.issWithholding} onChange={e => setNfseForm({ ...nfseForm, issWithholding: Number(e.target.value) })} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200">
+                                    <option value={1}>Não retido</option><option value={2}>Retido pelo tomador</option><option value={3}>Retido pelo intermediário</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div className="rounded-xl border border-slate-700 bg-slate-800/30 p-5 space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <h3 className="font-semibold text-white">Certificado digital A1</h3>
+                                    <p className="text-xs text-slate-400 mt-1">O arquivo e a senha são criptografados no servidor e nunca retornam para o navegador.</p>
+                                </div>
+                                <span className={`rounded-full border px-3 py-1 text-xs ${nfseForm.certificateConfigured ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-slate-600 text-slate-400'}`}>
+                                    {nfseForm.certificateConfigured ? 'Certificado configurado' : 'Não configurado'}
+                                </span>
+                            </div>
+                            {nfseForm.certificateSubject && <p className="break-all text-xs text-slate-400">Titular: {nfseForm.certificateSubject}</p>}
+                            {nfseForm.certificateValidTo && <p className="text-xs text-slate-400">Válido até: {new Date(nfseForm.certificateValidTo).toLocaleDateString('pt-BR')}</p>}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-cyan-500/40 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-300 hover:bg-cyan-500/10">
+                                    <Upload className="h-4 w-4" /> {nfseCertificateName || (nfseForm.certificateConfigured ? 'Trocar certificado .pfx/.p12' : 'Selecionar certificado .pfx/.p12')}
+                                    <input type="file" accept=".pfx,.p12,application/x-pkcs12" className="hidden" onChange={e => handleNfseCertificate(e.target.files?.[0])} />
+                                </label>
+                                <input type="password" value={nfseCertificatePassword} onChange={e => setNfseCertificatePassword(e.target.value)} placeholder={nfseCertificate ? 'Senha do novo certificado' : 'Senha (somente ao trocar certificado)'} className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
+                            </div>
+                        </div>
+                        <label className="flex items-center gap-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 text-sm text-slate-200">
+                            <input type="checkbox" checked={nfseForm.enabled} onChange={e => setNfseForm({ ...nfseForm, enabled: e.target.checked })} className="h-4 w-4 accent-cyan-500" />
+                            Liberar o botão de transmissão para homologação nas ordens de serviço
+                        </label>
+                        <div className="flex flex-wrap gap-3">
+                            <button disabled={savingNfse} className="flex items-center gap-2 rounded-xl bg-cyan-600 px-6 py-3 font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"><Save className="h-4 w-4" />{savingNfse ? 'Salvando...' : 'Salvar configuração'}</button>
+                            <button type="button" disabled={testingNfse || !nfseForm.certificateConfigured} onClick={handleTestNfse} className="flex items-center gap-2 rounded-xl border border-slate-600 px-6 py-3 font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-40"><Wifi className="h-4 w-4" />{testingNfse ? 'Testando...' : 'Testar conexão'}</button>
+                            {nfseForm.lastConnectionStatus && <span className={`self-center text-sm ${nfseForm.lastConnectionStatus === 'connected' ? 'text-emerald-400' : 'text-rose-400'}`}>{nfseForm.lastConnectionStatus === 'connected' ? 'Conexão confirmada' : 'Último teste falhou'}</span>}
+                        </div>
+                    </form>
                 )}
             </div>
         </div>

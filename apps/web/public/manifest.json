@@ -1,6 +1,6 @@
 {
-  "name": "G-TEC Sistema",
-  "short_name": "G-TEC",
+  "name": "Feitosa Soluções em Informática",
+  "short_name": "Feitosa Soluções",
   "description": "Sistema de Gestão para Assistências Técnicas e Lojas de Informática",
   "start_url": "/admin",
   "display": "standalone",
@@ -9,12 +9,12 @@
   "orientation": "any",
   "icons": [
     {
-      "src": "/favicon.png",
+      "src": "/icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/favicon.png",
+      "src": "/icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }

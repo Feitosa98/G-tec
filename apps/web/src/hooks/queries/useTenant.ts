@@ -3,8 +3,9 @@ import { storeRequest, getStoreSlug } from '../../utils/api';
 
 const defaultTenant = {
     id: 'gtec-default',
-    businessName: 'GTEC Informática',
-    shortName: 'GTEC',
+    businessName: 'Feitosa Soluções em Informática',
+    legalName: 'IAGO DA SILVA FEITOSA',
+    shortName: 'Feitosa Soluções',
     logoUrl: '/G-tec/logo.png', // Fallback, will be replaced by actual data
     primaryColor: '#0052cc',
     accentColor: '#d4a024',
@@ -16,7 +17,7 @@ const defaultTenant = {
     email: 'contato@gtecinformatica.com.br',
     billingEmail: '',
     phone: '',
-    document: '45.123.789/0001-90',
+    document: '35.623.245/0001-50',
     address: 'Manaus - AM',
     street: '',
     addressNumber: '',

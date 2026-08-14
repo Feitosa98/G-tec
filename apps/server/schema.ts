@@ -47,3 +47,4 @@ export const suppliers = createCollectionTable('suppliers');
 export const stockMovements = createCollectionTable('stock_movements');
 export const appointments = createCollectionTable('appointments');
 export const auditLogs = createCollectionTable('audit_log');
+export const fiscalDocuments = createCollectionTable('fiscal_documents');

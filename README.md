@@ -1,11 +1,11 @@
-# 🛒 G-TEC E-commerce
+# 🛒 Feitosa Soluções em Informática
 
 ![React](https://img.shields.io/badge/React-19.2.0-61DAFB?style=for-the-badge&logo=react&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-7.2.4-646CFF?style=for-the-badge&logo=vite&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 ![Deploy](https://img.shields.io/badge/Deploy-GitHub%20Pages-blue?style=for-the-badge&logo=github)
 
-Plataforma de e-commerce moderna e completa para a **G-TEC Informática**, desenvolvida com React e Vite. Sistema integrado de vendas online com painel administrativo, gerenciamento de produtos, pedidos e análise financeira.
+Plataforma de e-commerce moderna e completa para a **Feitosa Soluções em Informática**, desenvolvida com React e Vite. Sistema integrado de vendas online com painel administrativo, gerenciamento de produtos, pedidos e análise financeira.
 
 ## 🌐 [**Acesse a Demonstração Online →**](https://feitosa98.github.io/G-tec/)
 
@@ -25,7 +25,7 @@ Plataforma de e-commerce moderna e completa para a **G-TEC Informática**, desen
 
 ## 🎯 Sobre o Projeto
 
-O **G-TEC E-commerce** é uma solução completa de vendas online desenvolvida especificamente para a G-TEC Informática em Manaus. O sistema oferece uma experiência de compra moderna e intuitiva para os clientes, além de um poderoso painel administrativo para gerenciamento completo do negócio.
+O sistema da **Feitosa Soluções em Informática** é uma solução completa de vendas online desenvolvida especificamente para a empresa em Manaus. O sistema oferece uma experiência de compra moderna e intuitiva para os clientes, além de um poderoso painel administrativo para gerenciamento completo do negócio.
 
 ### Principais Diferenciais
 
@@ -176,6 +176,17 @@ npm run lint
 - Faça login com credenciais de administrador
 - Gerencie produtos, pedidos e finanças
 
+## NFS-e Nacional em homologação
+
+O servidor transmite DPS 1.01 assinada com certificado A1 somente para o ambiente oficial de produção restrita. Antes de configurar no painel:
+
+1. Defina `NFSE_SECRET_KEY` no ambiente do servidor com um segredo aleatório exclusivo de pelo menos 32 caracteres.
+2. Reinicie o serviço.
+3. No painel administrativo, abra **Integrações > NFS-e (Homologação)**, informe os dados fiscais e carregue o certificado `.pfx` ou `.p12`.
+4. Salve, teste a conexão e só então habilite o botão de transmissão nas ordens de serviço.
+
+Não troque a `NFSE_SECRET_KEY` enquanto houver um certificado armazenado. A troca da chave exige carregar novamente o certificado A1.
+
 ## 📁 Estrutura do Projeto
 
 ```
@@ -249,7 +260,7 @@ Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para ma
 
 ## 📞 Contato
 
-**G-TEC Informática**
+**Feitosa Soluções em Informática**
 - 📍 Manaus, Amazonas
 - 📧 Email: iagofeitosa3@gmail.com
 - 🌐 GitHub: [@Feitosa98](https://github.com/Feitosa98)

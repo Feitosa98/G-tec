@@ -19,6 +19,7 @@ import {
     listTenants,
     resolveTenant,
     registerCustomer,
+    reserveNfseDpsNumber,
     setTenantStatus,
     updateTenantBySlug,
     updateTenantRecord,
@@ -27,6 +28,15 @@ import {
 } from './database.js';
 import { createToken, verifyToken } from './auth.js';
 import { createMPPixPayment, createMPPreference, getMPPayment } from './services/mercadopago.js';
+import {
+    buildAndSignDps,
+    decryptNfseSecret,
+    encryptNfseSecret,
+    inspectNfseCertificate,
+    NFSE_HOMOLOGATION_BASE_URL,
+    testNfseHomologationConnection,
+    transmitDpsToHomologation
+} from './services/nfse.js';
 
 const app = express();
 // A aplicação roda atrás do Traefik na VPS. Isso preserva o IP real do
@@ -44,6 +54,7 @@ const requiredProductionSecret = (name: string, developmentFallback: string) => 
 const masterUser = process.env.SAAS_ADMIN_USER || 'gestor';
 const masterPassword = requiredProductionSecret('SAAS_ADMIN_PASSWORD', 'local-development-admin-password');
 const tokenSecret = requiredProductionSecret('SAAS_TOKEN_SECRET', 'local-token-secret-development-only');
+const nfseSecret = process.env.NFSE_SECRET_KEY || (isProduction ? '' : 'local-nfse-secret-development-only');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = process.env.NODE_ENV === 'production' 
     ? path.join(process.cwd(), 'apps/web/dist')
@@ -443,16 +454,235 @@ app.delete('/api/store/:slug/users/:id', requireStoreAdmin, async (req, res, nex
     }
 });
 
+const nfseConfigSchema = z.object({
+    municipalRegistration: z.string().trim().min(1).max(15),
+    municipalityCode: z.string().regex(/^\d{7}$/),
+    dpsSeries: z.coerce.number().int().min(1).max(49999),
+    nextDps: z.coerce.number().int().min(1).max(999999999999999),
+    nationalServiceCode: z.string().regex(/^\d{6}$/),
+    municipalServiceCode: z.string().regex(/^\d{0,3}$/).optional().default(''),
+    simpleNationalStatus: z.coerce.number().int().min(1).max(3),
+    simpleNationalTaxRegime: z.coerce.number().int().min(1).max(3).optional().default(1),
+    specialTaxRegime: z.coerce.number().int().refine(value => [0, 1, 2, 3, 4, 5, 6, 9].includes(value)),
+    issTaxation: z.coerce.number().int().min(1).max(4),
+    issWithholding: z.coerce.number().int().min(1).max(3),
+    enabled: z.boolean().default(false),
+    certificateBase64: z.string().max(4_000_000).optional(),
+    certificatePassword: z.string().max(200).optional(),
+});
+
+const publicNfseConfig = (config: any) => ({
+    id: 'nfse',
+    environment: 'homologation',
+    baseUrl: NFSE_HOMOLOGATION_BASE_URL,
+    enabled: Boolean(config?.enabled),
+    municipalRegistration: config?.municipalRegistration || '',
+    municipalityCode: config?.municipalityCode || '1302603',
+    dpsSeries: Number(config?.dpsSeries || 1),
+    nextDps: Number(config?.nextDps || 1),
+    nationalServiceCode: config?.nationalServiceCode || '',
+    municipalServiceCode: config?.municipalServiceCode || '',
+    simpleNationalStatus: Number(config?.simpleNationalStatus || 1),
+    simpleNationalTaxRegime: Number(config?.simpleNationalTaxRegime || 1),
+    specialTaxRegime: Number(config?.specialTaxRegime || 0),
+    issTaxation: Number(config?.issTaxation || 1),
+    issWithholding: Number(config?.issWithholding || 1),
+    certificateConfigured: Boolean(config?.certificateEncrypted && config?.certificatePasswordEncrypted),
+    certificateSubject: config?.certificateSubject || '',
+    certificateValidFrom: config?.certificateValidFrom || '',
+    certificateValidTo: config?.certificateValidTo || '',
+    certificateFingerprint: config?.certificateFingerprint || '',
+    lastConnectionAt: config?.lastConnectionAt || '',
+    lastConnectionStatus: config?.lastConnectionStatus || '',
+});
+
+const getStoredNfseConfig = async (slug: string) => {
+    const records = await listStoreRecords(slug, 'integrations');
+    return (records || []).find((record: any) => record.id === 'nfse') || null;
+};
+
+const getNfseCredentials = (config: any) => {
+    if (!nfseSecret) throw new Error('NFSE_SECRET_KEY não configurada no servidor.');
+    if (!config?.certificateEncrypted || !config?.certificatePasswordEncrypted) throw new Error('Certificado A1 não configurado.');
+    return {
+        pfxBase64: decryptNfseSecret(config.certificateEncrypted, nfseSecret),
+        passphrase: decryptNfseSecret(config.certificatePasswordEncrypted, nfseSecret),
+    };
+};
+
+app.get('/api/store/:slug/nfse/config', requireStoreAdmin, async (req, res, next) => {
+    try {
+        return res.json(publicNfseConfig(await getStoredNfseConfig(cleanSlug(req.params.slug))));
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/nfse/config', requireStoreAdmin, async (req, res, next) => {
+    try {
+        if (!nfseSecret) return res.status(503).json({ message: 'Configure NFSE_SECRET_KEY no servidor antes de salvar o certificado.' });
+        const validation = nfseConfigSchema.safeParse(req.body);
+        if (!validation.success) return res.status(400).json({ message: 'Preencha corretamente todos os dados fiscais obrigatórios.' });
+        const slug = cleanSlug(req.params.slug);
+        const current = await getStoredNfseConfig(slug) || {};
+        const input = validation.data;
+        let certificateFields = {
+            certificateEncrypted: current.certificateEncrypted,
+            certificatePasswordEncrypted: current.certificatePasswordEncrypted,
+            certificateSubject: current.certificateSubject,
+            certificateValidFrom: current.certificateValidFrom,
+            certificateValidTo: current.certificateValidTo,
+            certificateFingerprint: current.certificateFingerprint,
+        };
+        if (input.certificateBase64) {
+            if (!input.certificatePassword) return res.status(400).json({ message: 'Informe a senha do novo certificado A1.' });
+            const pfxBase64 = input.certificateBase64.replace(/^data:[^;]+;base64,/, '');
+            const certificate = inspectNfseCertificate(pfxBase64, input.certificatePassword);
+            if (new Date(certificate.validTo) <= new Date()) return res.status(400).json({ message: 'O certificado A1 informado está vencido.' });
+            certificateFields = {
+                certificateEncrypted: encryptNfseSecret(pfxBase64, nfseSecret),
+                certificatePasswordEncrypted: encryptNfseSecret(input.certificatePassword, nfseSecret),
+                certificateSubject: certificate.subject,
+                certificateValidFrom: certificate.validFrom,
+                certificateValidTo: certificate.validTo,
+                certificateFingerprint: certificate.fingerprint,
+            };
+        }
+        if (input.enabled && !certificateFields.certificateEncrypted) return res.status(400).json({ message: 'Selecione um certificado digital A1 (.pfx ou .p12) antes de habilitar a emissão.' });
+        const saved = await upsertStoreRecord(slug, 'integrations', {
+            ...current,
+            ...input,
+            ...certificateFields,
+            certificateBase64: undefined,
+            certificatePassword: undefined,
+            id: 'nfse',
+            environment: 'homologation',
+            baseUrl: NFSE_HOMOLOGATION_BASE_URL,
+            updatedAt: new Date().toISOString(),
+        });
+        await writeAudit(slug, (req as any).auth, 'UPDATE', 'integrations', 'nfse');
+        return res.json(publicNfseConfig(saved));
+    } catch (error: any) {
+        if (String(error?.message).toLowerCase().includes('certificado') || String(error?.message).includes('NFSE_SECRET_KEY')) return res.status(400).json({ message: error.message });
+        return next(error);
+    }
+});
+
+app.post('/api/store/:slug/nfse/test-connection', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const config = await getStoredNfseConfig(slug);
+        if (!config) return res.status(400).json({ message: 'Configure a NFS-e antes de testar a conexão.' });
+        const credentials = getNfseCredentials(config);
+        const result = await testNfseHomologationConnection(config.municipalityCode, credentials.pfxBase64, credentials.passphrase);
+        const connected = result.status >= 200 && result.status < 300;
+        await upsertStoreRecord(slug, 'integrations', { ...config, lastConnectionAt: new Date().toISOString(), lastConnectionStatus: connected ? 'connected' : 'failed' });
+        if (!connected) return res.status(502).json({ message: `A SEFIN Nacional respondeu com HTTP ${result.status}.`, details: result.data });
+        return res.json({ connected: true, environment: 'homologation', municipalityCode: config.municipalityCode });
+    } catch (error: any) {
+        if (String(error?.message).toLowerCase().includes('certificado') || String(error?.message).includes('NFSE_SECRET_KEY')) return res.status(400).json({ message: error.message });
+        return next(error);
+    }
+});
+
+app.post('/api/store/:slug/nfse/issue/:orderId', requireStoreAdmin, async (req, res, next) => {
+    const slug = cleanSlug(req.params.slug);
+    try {
+        const config = await getStoredNfseConfig(slug);
+        if (!config?.enabled) return res.status(400).json({ message: 'Ative a emissão de NFS-e em homologação nas integrações.' });
+
+        const orders = await listStoreRecords(slug, 'service_orders');
+        const order = (orders || []).find((item: any) => item.id === req.params.orderId);
+        if (!order) return res.status(404).json({ message: 'Ordem de serviço não encontrada.' });
+        if (order.orderType === 'Venda Direta') return res.status(400).json({ message: 'Venda direta deve utilizar documento fiscal de produto, não NFS-e.' });
+        if (order.nfseHomologation?.status === 'AUTORIZADA') {
+            return res.status(409).json({ message: 'Esta ordem já possui uma NFS-e autorizada em homologação.', nfse: order.nfseHomologation });
+        }
+
+        const tenant = await resolveTenant(slug);
+        if (!tenant) return res.status(404).json({ message: 'Empresa não encontrada.' });
+        const customers = await listStoreRecords(slug, 'customers');
+        const customer = (customers || []).find((item: any) => item.id === order.customerId);
+        const credentials = getNfseCredentials(config);
+        const dpsNumber = await reserveNfseDpsNumber(slug);
+        if (!dpsNumber) return res.status(409).json({ message: 'Não foi possível reservar o número da DPS.' });
+
+        const dps = buildAndSignDps({
+            tenant,
+            config,
+            order,
+            customer,
+            dpsNumber,
+            pfxBase64: credentials.pfxBase64,
+            passphrase: credentials.passphrase,
+        });
+        const transmission = await transmitDpsToHomologation(dps.signedXml, credentials.pfxBase64, credentials.passphrase);
+        const authorized = transmission.status >= 200 && transmission.status < 300 && Boolean(transmission.authorizedXml);
+        const accessKey = transmission.authorizedXml.match(/Id=["']NFS([^"']+)["']/)?.[1] || '';
+        const nfseNumber = transmission.authorizedXml.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || '';
+        const issuedAt = new Date().toISOString();
+        const documentId = crypto.randomUUID();
+        const fiscalDocument = await upsertStoreRecord(slug, 'fiscal_documents', {
+            id: documentId,
+            type: 'NFSE',
+            environment: 'HOMOLOGACAO',
+            status: authorized ? 'AUTORIZADA' : 'REJEITADA',
+            orderId: order.id,
+            dpsId: dps.dpsId,
+            dpsNumber,
+            dpsSeries: Number(config.dpsSeries),
+            serviceTotal: dps.serviceTotal,
+            accessKey,
+            nfseNumber,
+            signedDpsBase64: Buffer.from(dps.signedXml, 'utf8').toString('base64'),
+            authorizedXmlBase64: transmission.authorizedXml ? Buffer.from(transmission.authorizedXml, 'utf8').toString('base64') : '',
+            responseStatus: transmission.status,
+            response: transmission.data,
+            issuedAt,
+        });
+        const nfseSummary = {
+            documentId: fiscalDocument?.id || documentId,
+            status: authorized ? 'AUTORIZADA' : 'REJEITADA',
+            environment: 'HOMOLOGACAO',
+            dpsId: dps.dpsId,
+            dpsNumber,
+            dpsSeries: Number(config.dpsSeries),
+            serviceTotal: dps.serviceTotal,
+            accessKey,
+            nfseNumber,
+            issuedAt,
+        };
+        await upsertStoreRecord(slug, 'service_orders', { ...order, nfseHomologation: nfseSummary });
+        await writeAudit(slug, (req as any).auth, authorized ? 'AUTHORIZE' : 'REJECT', 'fiscal_documents', documentId);
+
+        if (!authorized) {
+            return res.status(422).json({
+                message: 'A NFS-e não foi autorizada no ambiente de homologação.',
+                nfse: nfseSummary,
+                details: transmission.data,
+            });
+        }
+        return res.status(201).json({ message: 'NFS-e autorizada no ambiente de homologação.', nfse: nfseSummary });
+    } catch (error: any) {
+        const message = String(error?.message || '');
+        if (/CNPJ|código|série|serviço|certificado|NFSE_SECRET_KEY|DPS/i.test(message)) return res.status(400).json({ message });
+        return next(error);
+    }
+});
+
 app.get('/api/store/:slug/:collection', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         const records = await listStoreRecords(cleanSlug(req.params.slug), req.params.collection);
-        return records ? res.json(records) : res.status(404).json({ message: 'Loja não encontrada.' });
+        if (!records) return res.status(404).json({ message: 'Loja não encontrada.' });
+        if (req.params.collection === 'integrations') {
+            return res.json(records.map((record: any) => record.id === 'nfse' ? publicNfseConfig(record) : record));
+        }
+        return res.json(records);
     } catch (error) { return next(error); }
 });
 
 app.post('/api/store/:slug/:collection', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ message: 'Dados inválidos.' });
+        if (req.params.collection === 'integrations' && req.body.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
         const record = await upsertStoreRecord(cleanSlug(req.params.slug), req.params.collection, req.body);
         if (!record) return res.status(404).json({ message: 'Loja não encontrada.' });
         await writeAudit(cleanSlug(req.params.slug), (req as any).auth, 'CREATE', req.params.collection, record.id);
@@ -464,6 +694,7 @@ app.post('/api/store/:slug/:collection', requireStoreUser, requireCollectionAcce
 app.put('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ message: 'Dados inválidos.' });
+        if (req.params.collection === 'integrations' && req.params.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
         const record = await upsertStoreRecord(cleanSlug(req.params.slug), req.params.collection, { ...req.body, id: req.params.id });
         if (!record) return res.status(404).json({ message: 'Loja não encontrada.' });
         await writeAudit(cleanSlug(req.params.slug), (req as any).auth, 'UPDATE', req.params.collection, record.id);
@@ -475,6 +706,7 @@ app.put('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionA
 app.delete('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
+        if (req.params.collection === 'integrations' && req.params.id === 'nfse') return res.status(400).json({ message: 'A configuração fiscal deve ser desativada, não excluída pela rota comum.' });
         const deleted = await deleteStoreRecord(slug, req.params.collection, req.params.id);
         if (deleted) await writeAudit(slug, (req as any).auth, 'DELETE', req.params.collection, req.params.id);
         return res.json({ deleted });
@@ -977,4 +1209,4 @@ app.use((req, res, next) => {
 
 await initializeDatabases();
 await restoreWhatsAppSessions();
-app.listen(port, '0.0.0.0', () => console.log(`GTEC SaaS disponível na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Feitosa Soluções disponível na porta ${port}`));

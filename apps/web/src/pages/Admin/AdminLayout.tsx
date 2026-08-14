@@ -86,7 +86,7 @@ const AdminLayout = () => {
                         </div>
                     )}
                     <span className="text-xl font-bold font-display bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 truncate">
-                        {tenant?.shortName || 'G-TEC'}
+                        {tenant?.shortName || 'Feitosa Soluções'}
                     </span>
                     <button
                         type="button"
@@ -165,7 +165,7 @@ const AdminLayout = () => {
                     )}
                     <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-white">
-                            {tenant?.shortName || tenant?.businessName || 'G-TEC'}
+                            {tenant?.shortName || tenant?.businessName || 'Feitosa Soluções'}
                         </p>
                         <p className="truncate text-xs text-slate-500">
                             {navItems.find(item => item.path === location.pathname)?.label || 'Painel administrativo'}

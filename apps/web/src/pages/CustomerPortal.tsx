@@ -157,7 +157,7 @@ export default function CustomerPortal() {
             </main>
 
             <footer className="text-center text-xs text-slate-600 p-4">
-                Powered by G-TEC Sistema
+                Feitosa Soluções em Informática
             </footer>
         </div>
     );

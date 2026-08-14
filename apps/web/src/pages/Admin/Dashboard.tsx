@@ -283,7 +283,7 @@ const Dashboard = () => {
                 headStyles: { fillColor: [41, 128, 185] }
             });
 
-            doc.save('relatorio-gtec.pdf');
+            doc.save('relatorio-feitosa-solucoes.pdf');
         } catch (err) {
             console.error(err);
             showAlert("Erro", "Erro ao gerar PDF.");
@@ -316,7 +316,7 @@ const Dashboard = () => {
                 ])
             ];
 
-            downloadCsv([...summaryRows, ...salesRows], 'relatorio-gtec.csv');
+            downloadCsv([...summaryRows, ...salesRows], 'relatorio-feitosa-solucoes.csv');
         } catch (err) {
             console.error(err);
             showAlert("Erro", "Erro ao gerar a planilha.");

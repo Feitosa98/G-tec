@@ -54,6 +54,7 @@ export const generateProfessionalPDF = async (options) => {
         totalLabel = 'TOTAL:',
         totalValue = 0,
         terms = '',
+        testMode = false,
     } = options;
 
     try {
@@ -77,6 +78,15 @@ export const generateProfessionalPDF = async (options) => {
         doc.setLineWidth(1.5);
         doc.line(0, 45, 210, 45);
 
+        if (testMode) {
+            doc.setFillColor(185, 28, 28);
+            doc.rect(0, 46, 210, 10, 'F');
+            doc.setFontSize(10);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(255, 255, 255);
+            doc.text('SEM VALOR FISCAL — AMBIENTE DE TESTE', 105, 52.5, { align: 'center' });
+        }
+
         // --- HEADER CONTENT ---
         // Logo e identificação da empresa
         if (logo) {
@@ -87,7 +97,7 @@ export const generateProfessionalPDF = async (options) => {
         doc.setTextColor(255, 255, 255);
         doc.setFontSize(16);
         doc.setFont('helvetica', 'bold');
-        const bName = tenant.businessName || 'G-TEC Informática';
+        const bName = tenant.businessName || 'Feitosa Soluções em Informática';
         const companyName = doc.splitTextToSize(bName, 76)[0];
         doc.text(companyName, companyX, 15);
 
@@ -112,7 +122,7 @@ export const generateProfessionalPDF = async (options) => {
         doc.text(`${documentNumber}`, 163.5, 32, { align: 'center' });
 
         // --- INFO PANELS ---
-        const startY = 60;
+        const startY = testMode ? 68 : 60;
         
         // Left Column: Customer Info
         doc.setTextColor(...colorPrimary);
@@ -257,8 +267,8 @@ export const generateProfessionalPDF = async (options) => {
         doc.setFontSize(8);
         doc.setTextColor(150, 150, 150);
         doc.setFont('helvetica', 'normal');
-        doc.text(`Gerado por ${tenant.businessName || 'G-TEC'} - ${new Date().toLocaleString('pt-BR')}`, 105, pageHeight - 10, { align: 'center' });
-        doc.text('Documento gerado eletronicamente.', 105, pageHeight - 6, { align: 'center' });
+        doc.text(`Gerado por ${tenant.businessName || 'Feitosa Soluções em Informática'} - ${new Date().toLocaleString('pt-BR')}`, 105, pageHeight - 10, { align: 'center' });
+        doc.text(testMode ? 'Simulação local — não transmitida ao Sistema Nacional NFS-e.' : 'Documento gerado eletronicamente.', 105, pageHeight - 6, { align: 'center' });
 
         if (options.returnBase64) {
             const dataUri = doc.output('datauristring');
@@ -273,5 +283,147 @@ export const generateProfessionalPDF = async (options) => {
     } catch (err) {
         console.error('Error generating PDF:', err);
         return false;
+    }
+};
+
+const formatDocument = (value = '') => {
+    const digits = String(value).replace(/\D/g, '');
+    if (digits.length === 14) return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+    if (digits.length === 11) return digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4');
+    return value || 'Não informado';
+};
+
+const money = (value) => Number(value || 0).toLocaleString('pt-BR', {
+    style: 'currency', currency: 'BRL', minimumFractionDigits: 2,
+});
+
+export const generateDanfsePDF = async ({ tenant, config, order, customer, nfse, returnBase64 = false }) => {
+    try {
+        const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const margin = 10;
+        const contentWidth = pageWidth - (margin * 2);
+        const issueDate = nfse?.issuedAt ? new Date(nfse.issuedAt) : new Date();
+        const description = order?.issueDescription || order?.technicalReport || order?.orderType || 'Serviço de informática';
+        const issuerAddress = [tenant?.street, tenant?.addressNumber, tenant?.neighborhood, tenant?.city, tenant?.state, tenant?.postalCode]
+            .filter(Boolean).join(' - ') || tenant?.address || 'Endereço não informado';
+        const customerDocument = customer?.cpfCnpj || customer?.document || order?.clientDocument || '';
+        const customerAddress = customer?.address || [customer?.street, customer?.addressNumber, customer?.neighborhood, customer?.city, customer?.state, customer?.postalCode]
+            .filter(Boolean).join(' - ') || 'Não informado';
+
+        doc.setDrawColor(38, 59, 112);
+        doc.setLineWidth(0.6);
+        doc.rect(margin, 10, contentWidth, 277);
+
+        doc.setFillColor(38, 59, 112);
+        doc.rect(margin, 10, contentWidth, 25, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.text('DANFSe', 15, 21);
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Documento Auxiliar da Nota Fiscal de Serviço eletrônica', 15, 27);
+        doc.setFontSize(7);
+        doc.text('Padrão Nacional — Ambiente de Produção Restrita', 15, 32);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.text(`NFS-e ${nfse?.nfseNumber || '-'}`, 195, 20, { align: 'right' });
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.text(`DPS ${nfse?.dpsNumber || '-'}  |  Série ${nfse?.dpsSeries || '-'}`, 195, 27, { align: 'right' });
+
+        doc.setFillColor(254, 226, 226);
+        doc.setDrawColor(185, 28, 28);
+        doc.rect(margin, 35, contentWidth, 12, 'FD');
+        doc.setTextColor(153, 27, 27);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.text('HOMOLOGAÇÃO / TESTE — SEM VALIDADE FISCAL', pageWidth / 2, 42.5, { align: 'center' });
+
+        const section = (title, y, height) => {
+            doc.setDrawColor(148, 163, 184);
+            doc.setLineWidth(0.25);
+            doc.rect(margin, y, contentWidth, height);
+            doc.setFillColor(241, 245, 249);
+            doc.rect(margin, y, contentWidth, 7, 'F');
+            doc.setTextColor(30, 41, 59);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.text(title, margin + 3, y + 4.8);
+        };
+        const labelValue = (label, value, x, y, maxWidth = 84) => {
+            doc.setFontSize(7);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(71, 85, 105);
+            doc.text(label, x, y);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(15, 23, 42);
+            doc.text(doc.splitTextToSize(String(value || '-'), maxWidth), x, y + 4);
+        };
+
+        section('IDENTIFICAÇÃO DA NFS-e', 50, 31);
+        labelValue('Chave de acesso', nfse?.accessKey || '-', 13, 61, 125);
+        labelValue('Data e hora da emissão', issueDate.toLocaleString('pt-BR'), 143, 61, 49);
+        labelValue('Situação', 'AUTORIZADA EM HOMOLOGAÇÃO', 13, 73, 80);
+        labelValue('Município de emissão', `${tenant?.city || 'Manaus'} - ${tenant?.state || 'AM'}`, 104, 73, 88);
+
+        section('PRESTADOR DO SERVIÇO', 84, 40);
+        labelValue('Nome / Razão social', tenant?.legalName || tenant?.businessName || 'Feitosa Soluções em Informática', 13, 95, 110);
+        labelValue('CNPJ', formatDocument(tenant?.document), 130, 95, 62);
+        labelValue('Inscrição municipal', config?.municipalRegistration || '-', 13, 107, 50);
+        labelValue('Regime tributário', 'ME/EPP optante pelo Simples Nacional', 67, 107, 125);
+        labelValue('Endereço', issuerAddress, 13, 119, 179);
+
+        section('TOMADOR DO SERVIÇO', 127, 34);
+        labelValue('Nome / Razão social', order?.clientName || customer?.name || 'Não informado', 13, 138, 110);
+        labelValue('CPF/CNPJ', formatDocument(customerDocument), 130, 138, 62);
+        labelValue('E-mail / Telefone', [order?.clientEmail || customer?.email, order?.clientPhone || customer?.phone].filter(Boolean).join(' | ') || 'Não informado', 13, 150, 90);
+        labelValue('Endereço', customerAddress, 107, 150, 85);
+
+        section('SERVIÇO PRESTADO', 164, 49);
+        labelValue('Código de tributação nacional / municipal', `${config?.nationalServiceCode || '-'} / ${config?.municipalServiceCode || '-'}`, 13, 175, 75);
+        labelValue('Local da prestação', `${tenant?.city || 'Manaus'} - ${tenant?.state || 'AM'}`, 100, 175, 92);
+        labelValue('Descrição do serviço', description, 13, 187, 179);
+        if (order?.technicalReport) labelValue('Informações complementares', order.technicalReport, 13, 201, 179);
+
+        section('VALORES E TRIBUTAÇÃO', 216, 42);
+        labelValue('Valor dos serviços', money(nfse?.serviceTotal), 13, 227, 45);
+        labelValue('Desconto incondicionado', money(0), 61, 227, 45);
+        labelValue('ISSQN retido', 'Não', 109, 227, 35);
+        labelValue('Valor líquido', money(nfse?.serviceTotal), 149, 227, 43);
+        labelValue('Tributação do ISSQN', 'Operação tributável — ISSQN devido no município da prestação', 13, 241, 105);
+        labelValue('Percentual aproximado do Simples Nacional', '6,00%', 124, 241, 68);
+
+        const consultationBaseUrl = nfse?.environment === 'PRODUCAO'
+            ? 'https://www.nfse.gov.br/ConsultaPublica/'
+            : 'https://www.producaorestrita.nfse.gov.br/ConsultaPublica/';
+        const consultationUrl = `${consultationBaseUrl}?tpc=1&chave=${encodeURIComponent(nfse?.accessKey || '')}`;
+        const qrDataUrl = await QRCode.toDataURL(consultationUrl, { width: 500, margin: 1, errorCorrectionLevel: 'M' });
+        doc.addImage(qrDataUrl, 'PNG', 13, 262, 20, 20);
+        doc.setFontSize(6.5);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(71, 85, 105);
+        doc.text('Leia o QR para consultar esta NFS-e no Portal Nacional.', 36, 268);
+        doc.text('Documento gerado diretamente pelo sistema a partir da NFS-e autorizada pelo ambiente nacional de homologação.', 36, 273);
+        doc.text(`Referência interna: O.S. #${String(order?.id || '').slice(0, 8).toUpperCase()}`, 36, 278);
+        doc.setTextColor(15, 23, 42);
+        doc.setFont('courier', 'normal');
+        doc.text(doc.splitTextToSize(nfse?.accessKey || '-', 155), 36, 283);
+
+        if (returnBase64) {
+            const dataUri = doc.output('datauristring');
+            return {
+                success: true,
+                base64: dataUri.substring(dataUri.indexOf(',') + 1),
+                filename: `DANFSe_HOMOLOGACAO_${nfse?.nfseNumber || 'nota'}.pdf`,
+            };
+        }
+        const blob = doc.output('blob');
+        return { success: true, url: URL.createObjectURL(blob), filename: `DANFSe_HOMOLOGACAO_${nfse?.nfseNumber || 'nota'}.pdf` };
+    } catch (error) {
+        console.error('Erro ao gerar DANFSe:', error);
+        return { success: false };
     }
 };

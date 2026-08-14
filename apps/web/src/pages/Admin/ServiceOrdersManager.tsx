@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { 
     Plus, Trash2, Edit, ClipboardList, Printer, CheckCircle, Search, 
-    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy, QrCode, ExternalLink
+    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy, QrCode, ExternalLink, FileText, ShieldCheck, Eye
 } from 'lucide-react';
 import { showToast } from '../../utils/toast';
-import { generateProfessionalPDF } from '../../utils/pdfGenerator';
+import { generateDanfsePDF, generateProfessionalPDF } from '../../utils/pdfGenerator';
 import { useNotify } from '../../hooks/useNotify';
 import { formatBrazilianPhone } from '../../utils/phone';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
@@ -99,6 +99,9 @@ const ServiceOrdersManager = () => {
     const [waTemplates, setWaTemplates] = useState(defaultFlowTemplates);
     const [pixPayments, setPixPayments] = useState<Record<string, any>>({});
     const [pixModal, setPixModal] = useState<{ order: any; payment: any } | null>(null);
+    const [nfseHomologationEnabled, setNfseHomologationEnabled] = useState(false);
+    const [nfseConfig, setNfseConfig] = useState<any>(null);
+    const [issuingNfseId, setIssuingNfseId] = useState('');
 
     const handleSendWhatsApp = async (order: any) => {
         const phone = order.clientPhone || '';
@@ -251,12 +254,13 @@ const ServiceOrdersManager = () => {
 
     const fetchData = async () => {
         try {
-            const [ordersRes, custRes, prodRes, servRes, integrationsRes] = await Promise.all([
+            const [ordersRes, custRes, prodRes, servRes, integrationsRes, nfseRes] = await Promise.all([
                 fetch(`/api/store/${tenant.storeSlug}/service_orders`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/customers`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/products`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/services`, { headers }),
-                fetch(`/api/store/${tenant.storeSlug}/integrations`, { headers })
+                fetch(`/api/store/${tenant.storeSlug}/integrations`, { headers }),
+                fetch(`/api/store/${tenant.storeSlug}/nfse/config`, { headers })
             ]);
 
             if (ordersRes.ok) setOrders(await ordersRes.json());
@@ -265,6 +269,9 @@ const ServiceOrdersManager = () => {
             const prods = prodRes.ok ? await prodRes.json() : [];
             const servs = servRes.ok ? await servRes.json() : [];
             const integrations = integrationsRes.ok ? await integrationsRes.json() : [];
+            const nfseConfig = nfseRes.ok ? await nfseRes.json() : null;
+            setNfseConfig(nfseConfig);
+            setNfseHomologationEnabled(Boolean(nfseConfig?.enabled && nfseConfig?.certificateConfigured));
             setMpConfigured(integrations.some((item: any) => item.id === 'mercadopago' && item.accessToken));
             const savedTemplates = integrations.find((item: any) => item.id === 'whatsapp_templates');
             setWaTemplates({ ...defaultFlowTemplates, ...(savedTemplates || {}) });
@@ -602,6 +609,136 @@ const ServiceOrdersManager = () => {
         } catch (err) {
             console.error(err);
             showAlert("Erro", "Erro ao gerar PDF da O.S.");
+        }
+    };
+
+    const generateTestServiceInvoice = async (order: any) => {
+        try {
+            if (order.orderType === 'Venda Direta') {
+                showToast.error('A nota de serviço de teste está disponível somente para ordens de serviço.');
+                return;
+            }
+
+            const customer = customers.find((item: any) => item.id === order.customerId);
+            const serviceItems = (order.items || []).filter((item: any) =>
+                String(item.type || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith('servi')
+            );
+            const serviceTotal = serviceItems.length > 0
+                ? calculateItemsTotal(serviceItems)
+                : resolveOrderTotal(order);
+
+            if (!order.clientName || serviceTotal <= 0) {
+                showToast.error('Informe o cliente e um valor de serviço maior que zero antes do teste.');
+                return;
+            }
+
+            const issuedAt = order.testServiceInvoice?.issuedAt || new Date().toISOString();
+            const testNumber = order.testServiceInvoice?.number
+                || `TEST-${new Date(issuedAt).getFullYear()}-${String(order.id || '').replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+            const rows = serviceItems.length > 0
+                ? serviceItems.map((item: any) => [
+                    item.name || 'Serviço',
+                    String(item.qty || 1),
+                    `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                    `R$ ${(Number(item.price || 0) * Number(item.qty || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                ])
+                : [[
+                    order.issueDescription || order.orderType || 'Serviço informado na ordem de serviço',
+                    '1',
+                    `R$ ${serviceTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                    `R$ ${serviceTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                ]];
+
+            const customerDocument = customer?.cpfCnpj || customer?.document || '';
+            const customerAddress = customer?.address || '';
+            const generated = await generateProfessionalPDF({
+                tenant,
+                title: 'NFS-e DE TESTE',
+                documentNumber: testNumber,
+                customerInfo: [
+                    order.clientName,
+                    customerDocument ? `CPF/CNPJ: ${customerDocument}` : 'CPF/CNPJ: não informado',
+                    customerAddress || order.clientEmail || 'Endereço: não informado',
+                ],
+                documentInfo: [
+                    { label: 'Emissão:', value: new Date(issuedAt).toLocaleString('pt-BR') },
+                    { label: 'Ambiente:', value: 'TESTE LOCAL' },
+                    { label: 'Situação:', value: 'SIMULADA' },
+                    { label: 'Referência:', value: `O.S. #${String(order.id).slice(0, 8).toUpperCase()}` },
+                ],
+                tableColumns: ['Descrição do serviço', 'Qtd', 'V. Unit.', 'Total'],
+                tableRows: rows,
+                totalLabel: 'TOTAL DOS SERVIÇOS:',
+                totalValue: serviceTotal,
+                terms: 'DOCUMENTO DE SIMULAÇÃO SEM VALIDADE FISCAL. Esta nota não foi assinada, autorizada nem transmitida à Prefeitura, à SEFIN Nacional ou ao Ambiente de Dados Nacional. Uso exclusivo para validação interna do sistema.',
+                filename: `NFSe_TESTE_${testNumber}.pdf`,
+                testMode: true,
+            });
+
+            if (!generated) {
+                showAlert('Erro', 'Não foi possível gerar a nota de serviço de teste.');
+                return;
+            }
+
+            const saved = await saveOrder({
+                ...order,
+                testServiceInvoice: {
+                    number: testNumber,
+                    status: 'SIMULADA',
+                    environment: 'TESTE_LOCAL',
+                    issuedAt,
+                    serviceTotal,
+                },
+            });
+            if (saved) showToast.success('Nota de serviço de teste gerada. Nenhum dado foi enviado ao governo.');
+        } catch (error) {
+            console.error(error);
+            showAlert('Erro', 'Erro ao gerar a nota de serviço de teste.');
+        }
+    };
+
+    const issueNfseHomologation = (order: any) => {
+        showConfirm(
+            'Transmitir NFS-e em homologação',
+            'A DPS será assinada com o certificado A1 e enviada ao ambiente oficial de testes da NFS-e Nacional. O documento não terá validade fiscal. Deseja continuar?',
+            async () => {
+                setIssuingNfseId(order.id);
+                try {
+                    const response = await fetch(`/api/store/${tenant.storeSlug}/nfse/issue/${order.id}`, {
+                        method: 'POST', headers,
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.message || 'A NFS-e não foi autorizada em homologação.');
+                    showToast.success('NFS-e autorizada no ambiente oficial de homologação.');
+                    await fetchData();
+                } catch (error: any) {
+                    showAlert('NFS-e não autorizada', error.message || 'Não foi possível transmitir a NFS-e.');
+                    await fetchData();
+                } finally {
+                    setIssuingNfseId('');
+                }
+            }
+        );
+    };
+
+    const viewNfseHomologation = async (order: any) => {
+        const preview = window.open('', '_blank');
+        try {
+            if (preview) preview.document.write('<title>Gerando DANFSe...</title><p style="font-family:Arial;padding:24px">Gerando DANFSe de homologação...</p>');
+            const customer = customers.find((item: any) => item.id === order.customerId) || null;
+            const generated = await generateDanfsePDF({
+                tenant,
+                config: nfseConfig,
+                order,
+                customer,
+                nfse: order.nfseHomologation,
+            });
+            if (!generated.success || !generated.url) throw new Error('Não foi possível gerar o DANFSe.');
+            if (preview) preview.location.href = generated.url;
+            else window.open(generated.url, '_blank');
+        } catch (error: any) {
+            preview?.close();
+            showAlert('Erro', error.message || 'Não foi possível visualizar a NFS-e.');
         }
     };
 
@@ -1119,6 +1256,16 @@ const ServiceOrdersManager = () => {
                                         </td>
                                         <td className="py-4 px-5 font-bold text-slate-100">
                                             <div>R$ {resolveOrderTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+                                            {order.testServiceInvoice?.status === 'SIMULADA' && (
+                                                <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                                    NFS-e teste
+                                                </span>
+                                            )}
+                                            {order.nfseHomologation?.status && (
+                                                <span className={`inline-flex mt-1 ml-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${order.nfseHomologation.status === 'AUTORIZADA' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
+                                                    NFS-e homol. {order.nfseHomologation.status.toLowerCase()}
+                                                </span>
+                                            )}
                                             {order.paymentStatus === 'Pago' && (
                                                 <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                                     PIX pago
@@ -1151,6 +1298,34 @@ const ServiceOrdersManager = () => {
                                                 >
                                                     <Printer className="w-4 h-4" />
                                                 </button>
+                                                {order.orderType !== 'Venda Direta' && (
+                                                    <button
+                                                        onClick={() => generateTestServiceInvoice(order)}
+                                                        className="p-2 rounded-lg text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 transition-all cursor-pointer"
+                                                        title={order.testServiceInvoice ? 'Gerar novamente a NFS-e de teste' : 'Gerar NFS-e de teste (sem valor fiscal)'}
+                                                    >
+                                                        <FileText className="w-4 h-4" />
+                                                    </button>
+                                                )}
+                                                {nfseHomologationEnabled && order.orderType !== 'Venda Direta' && order.nfseHomologation?.status !== 'AUTORIZADA' && (
+                                                    <button
+                                                        onClick={() => issueNfseHomologation(order)}
+                                                        disabled={issuingNfseId === order.id}
+                                                        className="p-2 rounded-lg text-cyan-400 hover:bg-cyan-500/10 transition-all cursor-pointer disabled:animate-pulse disabled:opacity-50"
+                                                        title="Transmitir NFS-e ao ambiente oficial de homologação"
+                                                    >
+                                                        <ShieldCheck className="w-4 h-4" />
+                                                    </button>
+                                                )}
+                                                {order.nfseHomologation?.status === 'AUTORIZADA' && (
+                                                    <button
+                                                        onClick={() => viewNfseHomologation(order)}
+                                                        className="p-2 rounded-lg text-emerald-400 hover:bg-emerald-500/10 transition-all cursor-pointer"
+                                                        title="Ver NFS-e autorizada em homologação"
+                                                    >
+                                                        <Eye className="w-4 h-4" />
+                                                    </button>
+                                                )}
                                                 <button 
                                                     onClick={() => handleEdit(order)} 
                                                     className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-cyan-500/10 transition-all cursor-pointer" 
