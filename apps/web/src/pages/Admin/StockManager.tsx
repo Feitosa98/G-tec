@@ -1,13 +1,16 @@
 import { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
-import { Package, AlertTriangle, Plus, Minus, History, TrendingUp, TrendingDown, X, Save } from 'lucide-react';
+import { Package, AlertTriangle, Plus, Minus, History, TrendingUp, TrendingDown, X, Save, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useQueryClient } from '@tanstack/react-query';
+import { storeQueryKey } from '../../utils/api';
 
 export default function StockManager() {
     const { products, tenant } = useData();
+    const queryClient = useQueryClient();
     const [filter, setFilter] = useState<'all' | 'low' | 'out'>('all');
     const [movementModal, setMovementModal] = useState<any>(null);
-    const [movementType, setMovementType] = useState<'in' | 'out'>('in');
+    const [movementType, setMovementType] = useState<'in' | 'out' | 'set'>('in');
     const [movementQty, setMovementQty] = useState(1);
     const [movementNote, setMovementNote] = useState('');
     const [movements, setMovements] = useState<any[]>([]);
@@ -48,8 +51,10 @@ export default function StockManager() {
             id: crypto.randomUUID(),
             productId: movementModal.id,
             productName: movementModal.name,
-            type: movementType,
-            quantity: movementQty,
+            type: movementType === 'set' ? 'adjustment' : movementType,
+            quantity: movementType === 'set' ? Math.abs(movementQty - movementModal.stock) : movementQty,
+            previousStock: movementModal.stock,
+            balanceAfter: movementType === 'set' ? movementQty : undefined,
             note: movementNote,
             date: new Date().toISOString(),
         };
@@ -62,17 +67,18 @@ export default function StockManager() {
         // Update product stock
         const newStock = movementType === 'in'
             ? (movementModal.stock + movementQty)
-            : Math.max(0, movementModal.stock - movementQty);
+            : movementType === 'out' ? (movementModal.stock - movementQty) : movementQty;
 
         await fetch(`/api/store/${tenant.storeSlug}/products/${movementModal.id}`, {
             method: 'PUT', headers,
-            body: JSON.stringify({ ...movementModal, stock: newStock })
+            body: JSON.stringify({ ...movementModal, stock: newStock, quantity: newStock })
         });
 
-        toast.success(`Estoque ${movementType === 'in' ? 'adicionado' : 'retirado'} com sucesso!`);
+        toast.success(movementType === 'set' ? 'Saldo do estoque ajustado com sucesso!' : `Estoque ${movementType === 'in' ? 'adicionado' : 'retirado'} com sucesso!`);
         setMovementModal(null);
         setMovementQty(1);
         setMovementNote('');
+        await queryClient.invalidateQueries({ queryKey: storeQueryKey('products') });
         fetchMovements();
     };
 
@@ -116,7 +122,7 @@ export default function StockManager() {
                         <X className="w-8 h-8 text-rose-400 shrink-0" />
                         <div>
                             <p className="text-2xl font-bold text-rose-400">{outOfStockProducts.length}</p>
-                            <p className="text-slate-400 text-sm">Sem Estoque</p>
+                            <p className="text-slate-400 text-sm">Zerado ou Negativo</p>
                         </div>
                     </div>
                 </div>
@@ -133,7 +139,7 @@ export default function StockManager() {
                                 onClick={() => setFilter(f)}
                                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filter === f ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
                             >
-                                {f === 'all' ? 'Todos' : f === 'low' ? 'Estoque Baixo' : 'Sem Estoque'}
+                                {f === 'all' ? 'Todos' : f === 'low' ? 'Estoque Baixo' : 'Zerado/Negativo'}
                             </button>
                         ))}
                     </div>
@@ -165,7 +171,7 @@ export default function StockManager() {
                                         <td className="px-6 py-4 text-center text-slate-400">{p.minStock}</td>
                                         <td className="px-6 py-4 text-center">
                                             <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${isOut ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : isLow ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>
-                                                {isOut ? 'Esgotado' : isLow ? 'Baixo' : 'OK'}
+                                                {p.stock < 0 ? 'Negativo' : isOut ? 'Zerado' : isLow ? 'Baixo' : 'OK'}
                                             </span>
                                         </td>
                                         <td className="px-6 py-4">
@@ -183,6 +189,13 @@ export default function StockManager() {
                                                     title="Saída de estoque"
                                                 >
                                                     <Minus className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => { setMovementModal(p); setMovementType('set'); setMovementQty(p.stock); setMovementNote('Ajuste manual de saldo'); }}
+                                                    className="p-1.5 text-cyan-400 hover:bg-cyan-500/10 rounded-lg transition-all"
+                                                    title="Editar saldo diretamente"
+                                                >
+                                                    <Pencil className="w-4 h-4" />
                                                 </button>
                                             </div>
                                         </td>
@@ -207,6 +220,7 @@ export default function StockManager() {
                                 <div className="flex items-center gap-3">
                                     {m.type === 'in'
                                         ? <TrendingUp className="w-4 h-4 text-emerald-400" />
+                                        : m.type === 'adjustment' ? <Pencil className="w-4 h-4 text-cyan-400" />
                                         : <TrendingDown className="w-4 h-4 text-rose-400" />}
                                     <div>
                                         <span className="text-slate-200 font-medium">{m.productName}</span>
@@ -214,8 +228,8 @@ export default function StockManager() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    <span className={`font-bold ${m.type === 'in' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {m.type === 'in' ? '+' : '-'}{m.quantity}
+                                    <span className={`font-bold ${m.type === 'in' ? 'text-emerald-400' : m.type === 'adjustment' ? 'text-cyan-400' : 'text-rose-400'}`}>
+                                        {m.type === 'adjustment' ? `Saldo ${m.balanceAfter}` : `${m.type === 'in' ? '+' : '-'}${m.quantity}`}
                                     </span>
                                     <span className="text-slate-500 text-xs">{new Date(m.date).toLocaleDateString('pt-BR')}</span>
                                 </div>
@@ -231,7 +245,7 @@ export default function StockManager() {
                     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
                         <div className="flex items-center justify-between">
                             <h3 className="text-lg font-semibold text-white">
-                                {movementType === 'in' ? '📦 Entrada de Estoque' : '📤 Saída de Estoque'}
+                                {movementType === 'in' ? '📦 Entrada de Estoque' : movementType === 'out' ? '📤 Saída de Estoque' : '✏️ Ajustar saldo do estoque'}
                             </h3>
                             <button onClick={() => setMovementModal(null)} className="p-1.5 text-slate-400 hover:text-white rounded-lg">
                                 <X className="w-5 h-5" />
@@ -248,10 +262,11 @@ export default function StockManager() {
                                 className={`py-2 rounded-xl font-medium text-sm transition-all ${movementType === 'out' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'}`}
                             >Saída (-)</button>
                         </div>
+                        {movementType === 'set' && <p className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3 text-sm text-cyan-200">Informe abaixo a quantidade exata que deve ficar no estoque.</p>}
                         <div>
                             <label className="text-sm text-slate-400 mb-2 block">Quantidade</label>
                             <input
-                                type="number" min={1} value={movementQty}
+                                type="number" min={movementType === 'set' ? 0 : 1} value={movementQty}
                                 onChange={e => setMovementQty(Number(e.target.value))}
                                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-slate-100 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none"
                             />

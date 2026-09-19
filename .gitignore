@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.tsbuildinfo
 *.local
+/tmp/
+/output/
 .env
 .env.*
 !.env.example

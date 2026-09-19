@@ -1,16 +1,105 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } from '@whiskeysockets/baileys';
+import { BufferJSON, Browsers, DisconnectReason, initAuthCreds, makeWASocket, proto } from '@whiskeysockets/baileys';
 import * as QRCode from 'qrcode';
 import { Boom } from '@hapi/boom';
 import path from 'path';
 import fs from 'fs';
+import { decryptStoredSecret, encryptSecret, getDataEncryptionSecret, isEncryptedValue } from '../security.js';
 
 // Armazena as instâncias ativas e os QR Codes pendentes
 const sessions = new Map<string, any>();
 const qrCodes = new Map<string, string>();
 const connectionStatus = new Map<string, string>(); // 'connecting', 'connected', 'disconnected'
 const initializationPromises = new Map<string, Promise<any>>();
+const fileLocks = new Map<string, Promise<any>>();
 
 const getSessionDir = (tenantId: string) => path.join(process.cwd(), 'sessions', tenantId);
+
+const withFileLock = <T>(filePath: string, task: () => Promise<T>): Promise<T> => {
+    const previous = fileLocks.get(filePath) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(task);
+    fileLocks.set(filePath, current);
+    return current.finally(() => {
+        if (fileLocks.get(filePath) === current) fileLocks.delete(filePath);
+    });
+};
+
+const safeAuthFilename = (file: string) => String(file || '').replace(/\//g, '__').replace(/:/g, '-');
+
+const useEncryptedMultiFileAuthState = async (folder: string, tenantId: string) => {
+    const secret = getDataEncryptionSecret();
+    await fs.promises.mkdir(folder, { recursive: true, mode: 0o700 });
+
+    const writeData = async (data: any, file: string) => {
+        const safeFile = safeAuthFilename(file);
+        const filePath = path.join(folder, safeFile);
+        await withFileLock(filePath, async () => {
+            const serialized = JSON.stringify(data, BufferJSON.replacer);
+            const encrypted = encryptSecret(serialized, secret, `whatsapp:${tenantId}:${safeFile}`);
+            await fs.promises.writeFile(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
+            await fs.promises.chmod(filePath, 0o600).catch(() => undefined);
+        });
+    };
+
+    const readData = async (file: string) => {
+        const safeFile = safeAuthFilename(file);
+        const filePath = path.join(folder, safeFile);
+        try {
+            return await withFileLock(filePath, async () => {
+                const stored = await fs.promises.readFile(filePath, 'utf8');
+                const serialized = decryptStoredSecret(stored, secret, `whatsapp:${tenantId}:${safeFile}`);
+                const parsed = JSON.parse(serialized, BufferJSON.reviver);
+                if (!isEncryptedValue(stored)) {
+                    const encrypted = encryptSecret(serialized, secret, `whatsapp:${tenantId}:${safeFile}`);
+                    await fs.promises.writeFile(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
+                }
+                await fs.promises.chmod(filePath, 0o600).catch(() => undefined);
+                return parsed;
+            });
+        } catch (error: any) {
+            if (error?.code === 'ENOENT') return null;
+            throw new Error('Não foi possível abrir a sessão protegida do WhatsApp. Verifique a chave de criptografia.');
+        }
+    };
+
+    const removeData = async (file: string) => {
+        const filePath = path.join(folder, safeAuthFilename(file));
+        await withFileLock(filePath, async () => {
+            await fs.promises.unlink(filePath).catch((error: any) => {
+                if (error?.code !== 'ENOENT') throw error;
+            });
+        });
+    };
+
+    const creds = (await readData('creds.json')) || initAuthCreds();
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type: string, ids: string[]) => {
+                    const data: Record<string, any> = {};
+                    await Promise.all(ids.map(async id => {
+                        let value = await readData(`${type}-${id}.json`);
+                        if (type === 'app-state-sync-key' && value) value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                        data[id] = value;
+                    }));
+                    return data;
+                },
+                set: async (data: Record<string, Record<string, any>>) => {
+                    const tasks: Promise<void>[] = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const file = `${category}-${id}.json`;
+                            tasks.push(value ? writeData(value, file) : removeData(file));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => writeData(creds, 'creds.json')
+    };
+};
 
 const hasSavedSession = (tenantId: string) => fs.existsSync(path.join(getSessionDir(tenantId), 'creds.json'));
 
@@ -64,7 +153,7 @@ async function createWhatsAppConnection(tenantId: string) {
         fs.mkdirSync(sessionDir, { recursive: true });
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = await useEncryptedMultiFileAuthState(sessionDir, tenantId);
 
     connectionStatus.set(tenantId, 'connecting');
 

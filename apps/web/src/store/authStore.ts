@@ -21,11 +21,10 @@ interface AuthState {
 const readSession = (): User | null => {
     try {
         const session = JSON.parse(localStorage.getItem('gtec-session') || 'null');
-        if (session && session.role !== 'customer' && !session.token) {
-            localStorage.removeItem('gtec-session');
-            return null;
-        }
-        return session;
+        if (!session) return null;
+        const safeSession = { ...session, token: 'cookie-session' };
+        localStorage.setItem('gtec-session', JSON.stringify(safeSession));
+        return safeSession;
     } catch {
         localStorage.removeItem('gtec-session');
         return null;
@@ -47,7 +46,7 @@ export const useAuthStore = create<AuthState>((set) => ({
             });
             const data = await response.json();
             if (!response.ok) return { success: false, message: data.message || 'Credenciais inválidas.' };
-            const sessionUser = { ...data.user, token: data.token };
+            const sessionUser = { ...data.user, token: 'cookie-session' };
             set({ user: sessionUser });
             localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
             return { success: true };
@@ -65,7 +64,7 @@ export const useAuthStore = create<AuthState>((set) => ({
             });
             const data = await response.json();
             if (!response.ok) return { success: false, message: data.message || 'Credenciais inválidas.' };
-            const sessionUser = { ...data.user, token: data.token };
+            const sessionUser = { ...data.user, token: 'cookie-session' };
             set({ user: sessionUser });
             localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
             localStorage.setItem('gtec-active-tenant', sessionUser.storeSlug);
@@ -82,7 +81,7 @@ export const useAuthStore = create<AuthState>((set) => ({
             });
             const data = await response.json();
             if (!response.ok) return { success: false, message: data.message || 'Não foi possível cadastrar.' };
-            const sessionUser = { ...data.user, token: data.token };
+            const sessionUser = { ...data.user, token: 'cookie-session' };
             set({ user: sessionUser });
             localStorage.setItem('gtec-session', JSON.stringify(sessionUser));
             return { success: true };
@@ -92,7 +91,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     },
 
     logout: () => {
+        void fetch('/api/logout', { method: 'POST' }).catch(() => undefined);
         set({ user: null });
         localStorage.removeItem('gtec-session');
+        localStorage.removeItem('gtec-active-tenant');
     }
 }));

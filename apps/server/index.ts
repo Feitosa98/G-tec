@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import helmet from 'helmet';
+import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { InvalidWebhookSignatureError, WebhookSignatureValidator } from 'mercadopago';
@@ -10,9 +11,12 @@ import {
     authenticateStoreAdmin,
     authenticateStoreAdminGlobally,
     authenticateCustomer,
+    createAuthSession,
     createTenant,
+    deleteAuthSession,
     deleteStoreUser,
     deleteStoreRecord,
+    deleteServiceOrderWithStock,
     initializeDatabases,
     listStoreRecords,
     listStoreUsers,
@@ -20,19 +24,36 @@ import {
     resolveTenant,
     registerCustomer,
     reserveNfseDpsNumber,
+    replaceStoreCollections,
+    resolveAuthSession,
     setTenantStatus,
     updateTenantBySlug,
     updateTenantRecord,
     upsertStoreUser,
-    upsertStoreRecord
+    upsertStoreRecord,
+    upsertServiceOrderWithStock
 } from './database.js';
-import { createToken, verifyToken } from './auth.js';
+import { BACKUP_COLLECTIONS, createBackupDocument, encryptBackupDocument, validateBackupDocument } from './backup.js';
+import {
+    createGoogleDriveAuthorizationUrl,
+    exchangeGoogleDriveCode,
+    refreshGoogleDriveAccessToken,
+    uploadBackupToGoogleDrive,
+} from './services/google-drive.js';
+import {
+    deleteGoogleCalendarEventById,
+    googleCalendarEventId,
+    listManagedGoogleCalendarEventIds,
+    upsertGoogleCalendarEvent,
+} from './services/google-calendar.js';
+import { buildFinancialAgendaEvents } from './services/agenda-events.js';
+import { fetchNfeXmlByAccessKey, parseNfeAccessKey, parseNfePurchaseXml } from './services/nfe-distribution.js';
+import { fiscalCertificateSchema, prepareFiscalCertificate, publicFiscalCertificate } from './services/fiscal-certificate.js';
 import { createMPPixPayment, createMPPreference, getMPPayment } from './services/mercadopago.js';
+import { decryptStoredSecret, encryptSecret, getDataEncryptionSecret, isEncryptedValue, maskSecret } from './security.js';
 import {
     buildAndSignDps,
     decryptNfseSecret,
-    encryptNfseSecret,
-    inspectNfseCertificate,
     NFSE_HOMOLOGATION_BASE_URL,
     testNfseHomologationConnection,
     transmitDpsToHomologation
@@ -53,7 +74,8 @@ const requiredProductionSecret = (name: string, developmentFallback: string) => 
 };
 const masterUser = process.env.SAAS_ADMIN_USER || 'gestor';
 const masterPassword = requiredProductionSecret('SAAS_ADMIN_PASSWORD', 'local-development-admin-password');
-const tokenSecret = requiredProductionSecret('SAAS_TOKEN_SECRET', 'local-token-secret-development-only');
+requiredProductionSecret('SAAS_TOKEN_SECRET', 'local-token-secret-development-only');
+const dataEncryptionSecret = getDataEncryptionSecret();
 const nfseSecret = process.env.NFSE_SECRET_KEY || (isProduction ? '' : 'local-nfse-secret-development-only');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = process.env.NODE_ENV === 'production' 
@@ -63,10 +85,56 @@ const distPath = process.env.NODE_ENV === 'production'
 // Security Middlewares
 app.disable('x-powered-by');
 app.use(helmet({
-    contentSecurityPolicy: false, // Vite/React compatibility for local/inline scripts
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            baseUri: ["'self'"],
+            objectSrc: ["'none'"],
+            frameAncestors: ["'self'"],
+            formAction: ["'self'"],
+            scriptSrc: ["'self'"],
+            workerSrc: ["'self'", 'blob:'],
+            styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+            fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+            imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+            connectSrc: ["'self'"],
+            ...(isProduction ? { upgradeInsecureRequests: [] } : {})
+        }
+    },
     crossOriginEmbedderPolicy: false
 }));
-app.use(express.json({ limit: '3mb' }));
+app.use(compression({ threshold: 1024 }));
+// O motor de OCR usa WebAssembly em um worker local. A página continua sem eval.
+app.use('/ocr', (_req, res, next) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' blob:; worker-src 'self'");
+    next();
+});
+app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=(self), geolocation=(), microphone=(), payment=(self), usb=()');
+    next();
+});
+app.use(express.json({ limit: '20mb' }));
+
+app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || req.path.includes('/public/')) return next();
+    const origin = String(req.headers.origin || '');
+    const expectedOrigin = `${req.protocol}://${req.get('host')}`;
+    const fetchSite = String(req.headers['sec-fetch-site'] || '');
+    if ((origin && origin !== expectedOrigin) || fetchSite === 'cross-site') {
+        return res.status(403).json({ message: 'Origem da solicitação não autorizada.' });
+    }
+    next();
+});
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Math.max(600, Number(process.env.API_RATE_LIMIT_MAX || 1800)),
+    message: { message: 'Muitas solicitações. Aguarde alguns minutos.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use('/api', apiLimiter);
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -84,22 +152,64 @@ const publicLookupLimiter = rateLimit({
     legacyHeaders: false,
 });
 
-const tokenFromRequest = (req: any) => String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-const requireMaster = (req: any, res: any, next: any) => {
-    const payload = verifyToken(tokenFromRequest(req), tokenSecret);
-    if (!payload || payload.role !== 'saas-admin') return res.status(401).json({ message: 'Acesso não autorizado.' });
-    req.auth = payload;
-    next();
+const storeCookieName = isProduction ? '__Host-gtec_session' : 'gtec_session';
+const masterCookieName = isProduction ? '__Host-gtec_saas' : 'gtec_saas';
+const sessionMaxAgeSeconds = 2 * 60 * 60;
+const masterSessionMaxAgeSeconds = 60 * 60;
+
+const cookieValue = (req: any, name: string) => String(req.headers.cookie || '')
+    .split(';')
+    .map((part: string) => part.trim().split('='))
+    .find(([key]: string[]) => key === name)?.slice(1).join('=') || '';
+
+const requestTokens = (req: any, cookieNames: string[]) => {
+    const suppliedBearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const bearer = suppliedBearer.startsWith('cookie-session') ? '' : suppliedBearer;
+    return [bearer, ...cookieNames.map(name => cookieValue(req, name))].filter(Boolean);
 };
 
-const requireStoreUser = (req: any, res: any, next: any) => {
-    const payload = verifyToken(tokenFromRequest(req), tokenSecret);
-    const staffRoles = new Set(['admin', 'gerente', 'tecnico', 'vendedor']);
-    if (!payload || (payload.role !== 'saas-admin' && (!staffRoles.has(payload.role) || payload.storeSlug !== cleanSlug(req.params.slug)))) {
-        return res.status(401).json({ message: 'Acesso não autorizado.' });
+const requestSession = async (req: any, cookieNames: string[]) => {
+    for (const token of requestTokens(req, cookieNames)) {
+        const payload = await resolveAuthSession(token);
+        if (payload) return { payload, token };
     }
-    req.auth = payload;
-    next();
+    return null;
+};
+
+const setSessionCookie = (res: any, name: string, token: string, maxAgeSeconds: number) => {
+    const parts = [`${name}=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAgeSeconds}`];
+    if (isProduction) parts.push('Secure');
+    res.append('Set-Cookie', parts.join('; '));
+};
+
+const clearSessionCookie = (res: any, name: string) => {
+    const parts = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Strict', 'Max-Age=0'];
+    if (isProduction) parts.push('Secure');
+    res.append('Set-Cookie', parts.join('; '));
+};
+
+const requireMaster = async (req: any, res: any, next: any) => {
+    try {
+        const session = await requestSession(req, [masterCookieName]);
+        if (!session || session.payload.role !== 'saas-admin') return res.status(401).json({ message: 'Acesso não autorizado.' });
+        req.auth = session.payload;
+        req.authToken = session.token;
+        next();
+    } catch (error) { next(error); }
+};
+
+const requireStoreUser = async (req: any, res: any, next: any) => {
+    try {
+        const session = await requestSession(req, [storeCookieName, masterCookieName]);
+        const payload = session?.payload;
+        const staffRoles = new Set(['admin', 'gerente', 'tecnico', 'vendedor']);
+        if (!payload || (payload.role !== 'saas-admin' && (!staffRoles.has(payload.role) || payload.storeSlug !== cleanSlug(req.params.slug)))) {
+            return res.status(401).json({ message: 'Acesso não autorizado.' });
+        }
+        req.auth = payload;
+        req.authToken = session!.token;
+        next();
+    } catch (error) { next(error); }
 };
 
 const requireStoreAdmin = (req: any, res: any, next: any) => {
@@ -113,13 +223,230 @@ const requireStoreAdmin = (req: any, res: any, next: any) => {
 
 const cleanSlug = (value: any) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 
+const integrationSecretFields: Record<string, string[]> = {
+    mercadopago: ['accessToken', 'webhookSecret'],
+    email: ['pass'],
+    telegram: ['token'],
+    googledrive: ['refreshToken'],
+};
+
+const integrationSecretContext = (slug: string, integrationId: string, field: string) =>
+    `integration:${cleanSlug(slug)}:${integrationId}:${field}`;
+
+const protectIntegrationRecord = (slug: string, input: any, current: any = {}) => {
+    const record = { ...current, ...input };
+    const id = String(record.id || input.id || '');
+    for (const field of integrationSecretFields[id] || []) {
+        const supplied = input[field];
+        if (typeof supplied === 'string' && supplied.startsWith('•')) {
+            record[field] = current[field] || '';
+        } else if (supplied === undefined) {
+            record[field] = current[field] || '';
+        } else if (supplied) {
+            record[field] = isEncryptedValue(supplied)
+                ? supplied
+                : encryptSecret(String(supplied), dataEncryptionSecret, integrationSecretContext(slug, id, field));
+        } else {
+            record[field] = '';
+        }
+    }
+    return record;
+};
+
+const revealIntegrationRecord = (slug: string, record: any) => {
+    const revealed = { ...record };
+    const id = String(record?.id || '');
+    for (const field of integrationSecretFields[id] || []) {
+        if (record[field]) revealed[field] = decryptStoredSecret(record[field], dataEncryptionSecret, integrationSecretContext(slug, id, field));
+    }
+    return revealed;
+};
+
+const sanitizeIntegrationRecord = (record: any) => {
+    if (record?.id === 'nfse') return publicNfseConfig(record);
+    const sanitized = { ...record };
+    for (const field of integrationSecretFields[String(record?.id || '')] || []) sanitized[field] = maskSecret(record[field]);
+    return sanitized;
+};
+
+const getIntegrationConfig = async (slug: string, integrationId: string) => {
+    const records = await listStoreRecords(slug, 'integrations');
+    const stored = (records || []).find((record: any) => record.id === integrationId);
+    if (!stored) return null;
+    const protectedRecord = protectIntegrationRecord(slug, stored, stored);
+    if (JSON.stringify(protectedRecord) !== JSON.stringify(stored)) await upsertStoreRecord(slug, 'integrations', protectedRecord);
+    return revealIntegrationRecord(slug, protectedRecord);
+};
+
+const googleDriveClient = () => {
+    const clientId = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+    const clientSecret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
+    const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+    if (!clientId || !clientSecret || !publicBaseUrl) {
+        throw new Error('A integração com Google Drive ainda não foi configurada no servidor.');
+    }
+    return { clientId, clientSecret, redirectUri: `${publicBaseUrl}/api/backup/google/callback` };
+};
+
+type GoogleReturnTarget = 'backup' | 'agenda' | 'integracoes';
+
+const signGoogleDriveState = (slug: string, returnTo: GoogleReturnTarget = 'backup') => {
+    const encoded = Buffer.from(JSON.stringify({ slug, returnTo, expiresAt: Date.now() + 10 * 60_000 })).toString('base64url');
+    const signature = crypto.createHmac('sha256', dataEncryptionSecret).update(encoded).digest('base64url');
+    return `${encoded}.${signature}`;
+};
+
+const verifyGoogleDriveState = (state: string) => {
+    const [encoded, suppliedSignature] = String(state || '').split('.');
+    if (!encoded || !suppliedSignature) throw new Error('Autorização do Google inválida.');
+    const expectedSignature = crypto.createHmac('sha256', dataEncryptionSecret).update(encoded).digest('base64url');
+    const supplied = Buffer.from(suppliedSignature);
+    const expected = Buffer.from(expectedSignature);
+    if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) throw new Error('Autorização do Google inválida.');
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    if (!payload.slug || Number(payload.expiresAt) < Date.now()) throw new Error('A autorização do Google expirou.');
+    const returnTo: GoogleReturnTarget = ['agenda', 'integracoes'].includes(payload.returnTo) ? payload.returnTo : 'backup';
+    return { slug: cleanSlug(payload.slug), returnTo };
+};
+
+const buildBackupForSlug = async (slug: string) => {
+    const tenant = await resolveTenant(slug);
+    if (!tenant) throw new Error('Empresa não encontrada.');
+    const collections: Record<string, any[]> = {};
+    for (const collection of BACKUP_COLLECTIONS) {
+        const records = await listStoreRecords(slug, collection) || [];
+        collections[collection] = collection === 'integrations'
+            ? (records as any[]).map(sanitizeIntegrationRecord)
+            : records as any[];
+    }
+    return createBackupDocument(slug, tenant as any, collections);
+};
+
+const prepareRestoredCollections = async (slug: string, input: Record<string, any[]>) => {
+    const collections = { ...input };
+    const currentIntegrations = await listStoreRecords(slug, 'integrations') || [];
+    const currentById = new Map((currentIntegrations as any[]).map(record => [String(record.id), record]));
+    collections.integrations = (input.integrations || []).map((record: any) => {
+        const current = currentById.get(String(record?.id || '')) || {};
+        if (record?.id === 'nfse') {
+            const { certificateConfigured: _certificateConfigured, ...safeRecord } = record;
+            return {
+                ...current,
+                ...safeRecord,
+                certificateEncrypted: (current as any).certificateEncrypted,
+                certificatePasswordEncrypted: (current as any).certificatePasswordEncrypted,
+            };
+        }
+        return protectIntegrationRecord(slug, record, current);
+    });
+    // Conexões criadas depois do backup não são removidas, evitando perda de credenciais.
+    for (const current of currentIntegrations as any[]) {
+        if (!collections.integrations.some((record: any) => record.id === current.id)) collections.integrations.push(current);
+    }
+    return collections;
+};
+
+const performGoogleDriveBackup = async (slug: string) => {
+    const driveConfig = await getIntegrationConfig(slug, 'googledrive');
+    if (!driveConfig?.refreshToken) throw new Error('Google Drive não conectado.');
+    const client = googleDriveClient();
+    const accessToken = await refreshGoogleDriveAccessToken(client, driveConfig.refreshToken);
+    const backup = await buildBackupForSlug(slug);
+    const filename = `backup-${slug}-${new Date().toISOString().replace(/[:.]/g, '-')}.encrypted.json`;
+    const encryptedBackup = encryptBackupDocument(backup, dataEncryptionSecret);
+    const uploaded = await uploadBackupToGoogleDrive(accessToken, JSON.stringify(encryptedBackup), filename, driveConfig.folderId);
+    const saved = protectIntegrationRecord(slug, {
+        ...driveConfig,
+        id: 'googledrive',
+        connected: true,
+        folderId: uploaded.folderId,
+        lastFileId: uploaded.fileId,
+        lastBackupAt: new Date().toISOString(),
+        lastBackupStatus: 'success',
+        lastError: '',
+    }, driveConfig);
+    await upsertStoreRecord(slug, 'integrations', saved);
+    return { filename, ...uploaded, completedAt: saved.lastBackupAt };
+};
+
+const calendarEventsForSlug = async (slug: string) => {
+    const [appointments, sales, expenses] = await Promise.all([
+        listStoreRecords(slug, 'appointments'),
+        listStoreRecords(slug, 'sales'),
+        listStoreRecords(slug, 'expenses'),
+    ]);
+    return [
+        ...((appointments || []) as any[]).map(item => ({ ...item, source: item.source || 'appointment', readOnly: false })),
+        ...buildFinancialAgendaEvents((sales || []) as any[], (expenses || []) as any[]),
+    ];
+};
+
+const syncGoogleCalendarForSlug = async (slug: string) => {
+    const [driveConfig, calendarConfig] = await Promise.all([
+        getIntegrationConfig(slug, 'googledrive').catch(() => null),
+        getIntegrationConfig(slug, 'googlecalendar').catch(() => null),
+    ]);
+    if (!driveConfig?.refreshToken) throw new Error('Conecte a conta Google desta empresa primeiro.');
+    if (!calendarConfig?.enabled) throw new Error('A sincronização com o Google Agenda está desativada.');
+    const accessToken = await refreshGoogleDriveAccessToken(googleDriveClient(), driveConfig.refreshToken);
+    const calendarId = String(calendarConfig.calendarId || 'primary');
+    const timeZone = String(calendarConfig.timeZone || 'America/Manaus');
+    const events = await calendarEventsForSlug(slug);
+    const expectedIds = new Set(events.map(event => googleCalendarEventId(slug, String(event.id))));
+    let synced = 0;
+    for (const event of events) {
+        await upsertGoogleCalendarEvent(accessToken, slug, event, calendarId, timeZone);
+        synced += 1;
+    }
+    const managedIds = await listManagedGoogleCalendarEventIds(accessToken, slug, calendarId);
+    let removed = 0;
+    for (const eventId of managedIds) {
+        if (expectedIds.has(eventId)) continue;
+        if (await deleteGoogleCalendarEventById(accessToken, eventId, calendarId)) removed += 1;
+    }
+    const completedAt = new Date().toISOString();
+    await upsertStoreRecord(slug, 'integrations', {
+        ...calendarConfig,
+        id: 'googlecalendar', enabled: true, calendarId, timeZone,
+        lastSyncAt: completedAt, lastSyncStatus: 'success', lastSyncCount: synced, lastRemovedCount: removed, lastError: '',
+    });
+    return { synced, removed, completedAt };
+};
+
+const scheduleCalendarSync = (slug: string) => {
+    const timer = setTimeout(() => void syncGoogleCalendarForSlug(slug).catch(() => undefined), 250);
+    timer.unref?.();
+};
+
+const syncSalePaymentToServiceOrder = async (slug: string, sale: any) => {
+    const orderId = String(sale?.osReference || '').trim();
+    if (!orderId) return;
+    const orders = await listStoreRecords(slug, 'service_orders') || [];
+    const order = (orders as any[]).find(item => String(item.id) === orderId);
+    if (!order) return;
+    const paid = sale.paymentStatus === 'Pago' || sale.status === 'Pago';
+    const paidTotal = Number(sale.paidTotal ?? order.paidTotal ?? 0) || 0;
+    const total = Number(order.totalValue ?? sale.total ?? 0) || 0;
+    await upsertStoreRecord(slug, 'service_orders', {
+        ...order,
+        installments: sale.installments || order.installments || [],
+        paidTotal,
+        balanceDue: paid ? 0 : Math.max(0, total - paidTotal),
+        paymentStatus: paid ? 'Pago' : paidTotal > 0 ? 'Parcial' : (sale.paymentStatus || order.paymentStatus || 'Pendente'),
+        status: paid ? 'Paga' : order.status,
+        paid: paid || order.paid,
+        paidAt: paid ? (sale.paidAt || order.paidAt || new Date().toISOString()) : order.paidAt,
+        paymentMethod: sale.paymentMethod || order.paymentMethod,
+    });
+};
+
 const collectionPermissions: Record<string, Set<string>> = {
     admin: new Set(['*']),
-    gerente: new Set(['products', 'sales', 'customers', 'receivables', 'services', 'service_orders', 'suppliers', 'stock_movements', 'appointments']),
+    gerente: new Set(['products', 'sales', 'customers', 'receivables', 'services', 'service_orders', 'suppliers', 'stock_movements', 'appointments', 'purchase_invoices']),
     tecnico: new Set(['customers', 'services', 'service_orders', 'appointments']),
     vendedor: new Set(['products', 'sales', 'customers', 'stock_movements'])
 };
-const validCollections = new Set(['products', 'sales', 'expenses', 'customers', 'receivables', 'services', 'service_orders', 'subscriptions', 'integrations', 'suppliers', 'stock_movements', 'appointments', 'audit_log']);
+const validCollections = new Set(['products', 'sales', 'expenses', 'customers', 'receivables', 'services', 'service_orders', 'subscriptions', 'integrations', 'suppliers', 'stock_movements', 'appointments', 'audit_log', 'purchase_invoices']);
 const requireCollectionAccess = (req: any, res: any, next: any) => {
     const collection = String(req.params.collection || '');
     if (!validCollections.has(collection)) return res.status(404).json({ message: 'Recurso não encontrado.' });
@@ -141,10 +468,19 @@ const tenantSchema = z.object({
     businessName: z.string().min(3, "O nome da empresa deve ter no mínimo 3 caracteres."),
     storeSlug: z.string().optional(),
     email: z.string().email("E-mail inválido."),
-    adminPassword: z.string().min(8, "A senha deve ter no mínimo 8 caracteres.")
+    adminPassword: z.string().min(12, "A senha deve ter no mínimo 12 caracteres.")
 }).passthrough();
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+let initializationPromise: Promise<void> = Promise.resolve();
+let databaseReady = false;
+app.get('/api/health', (_req, res) => res.status(databaseReady ? 200 : 503).json({
+    status: databaseReady ? 'ok' : 'starting',
+    uptimeSeconds: Math.round(process.uptime()),
+}));
+
+app.use('/api', (_req, _res, next) => {
+    void initializationPromise.then(() => next()).catch(next);
+});
 
 // Portal do Cliente - endpoint público (sem autenticação)
 app.get('/api/public/:slug/os/:search', publicLookupLimiter, async (req, res, next) => {
@@ -181,13 +517,27 @@ app.get('/api/public/:slug/os/:search', publicLookupLimiter, async (req, res, ne
     } catch (error) { return next(error); }
 });
 
-app.post('/api/saas/login', loginLimiter, (req, res) => {
+app.post('/api/saas/login', loginLimiter, async (req, res, next) => {
+    try {
     const validUser = String(req.body.username || '') === masterUser;
     const provided = Buffer.from(String(req.body.password || ''));
     const expected = Buffer.from(masterPassword);
     const validPassword = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
     if (!validUser || !validPassword) return res.status(401).json({ message: 'Credenciais inválidas.' });
-    return res.json({ token: createToken({ role: 'saas-admin', name: 'Gestor SaaS' }, tokenSecret) });
+    const token = await createAuthSession({ id: 'saas-admin', role: 'saas-admin', name: 'Gestor SaaS' }, masterSessionMaxAgeSeconds);
+    setSessionCookie(res, masterCookieName, token, masterSessionMaxAgeSeconds);
+    return res.json({ ok: true, user: { role: 'saas-admin', name: 'Gestor SaaS' } });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/saas/session', requireMaster, (req: any, res) => res.json({ authenticated: true, user: req.auth }));
+
+app.post('/api/saas/logout', async (req, res, next) => {
+    try {
+        await Promise.all(requestTokens(req, [masterCookieName]).map(token => deleteAuthSession(token)));
+        clearSessionCookie(res, masterCookieName);
+        return res.json({ ok: true });
+    } catch (error) { return next(error); }
 });
 
 app.get('/api/saas/tenants', requireMaster, async (_req, res, next) => {
@@ -209,8 +559,11 @@ app.post('/api/saas/tenants', requireMaster, async (req, res, next) => {
         const tenant = await createTenant({ ...req.body, storeSlug });
         return res.status(201).json(tenant);
     } catch (error: any) {
-        if (error.code === '23505') return res.status(409).json({ message: 'Este identificador de loja já está em uso.' });
-        return next(error);
+        if (error.code === '23505' || error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Este identificador de loja já está em uso.' });
+        const stage = error.tenantCreationStage === 'admin' ? 'ADMIN' : 'TENANT';
+        const databaseCode = /^[A-Z0-9_]{1,64}$/.test(String(error.code || '')) ? String(error.code) : 'UNKNOWN';
+        console.error(`Falha ao criar loja [${stage}/${databaseCode}]`, error);
+        return res.status(500).json({ message: `Não foi possível criar a loja (${stage}/${databaseCode}).` });
     }
 });
 
@@ -239,7 +592,9 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
     try {
         const user = await authenticateStoreAdminGlobally(req.body.username, req.body.password);
         if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
-        return res.json({ user, token: createToken(user, tokenSecret) });
+        const token = await createAuthSession(user, sessionMaxAgeSeconds);
+        setSessionCookie(res, storeCookieName, token, sessionMaxAgeSeconds);
+        return res.json({ user });
     } catch (error: any) {
         if (error?.code === 'AMBIGUOUS_LOGIN') return res.status(409).json({ message: error.message });
         return next(error);
@@ -251,18 +606,22 @@ app.post('/api/store/:slug/login', loginLimiter, async (req, res, next) => {
         const slug = cleanSlug(req.params.slug);
         const user = await authenticateStoreAdmin(slug, req.body.username, req.body.password);
         if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
-        return res.json({ user, token: createToken(user, tokenSecret) });
+        const token = await createAuthSession(user, sessionMaxAgeSeconds);
+        setSessionCookie(res, storeCookieName, token, sessionMaxAgeSeconds);
+        return res.json({ user });
     } catch (error) { return next(error); }
 });
 
 app.post('/api/store/:slug/customer/register', loginLimiter, async (req, res, next) => {
     try {
-        const validation = z.object({ name: z.string().trim().min(2).max(120), email: z.string().email().max(254), password: z.string().min(8).max(128) }).safeParse(req.body);
-        if (!validation.success) return res.status(400).json({ message: 'Informe nome, e-mail e uma senha de pelo menos 8 caracteres.' });
+        const validation = z.object({ name: z.string().trim().min(2).max(120), email: z.string().email().max(254), password: z.string().min(12).max(128) }).safeParse(req.body);
+        if (!validation.success) return res.status(400).json({ message: 'Informe nome, e-mail e uma senha de pelo menos 12 caracteres.' });
         const user = await registerCustomer(cleanSlug(req.params.slug), req.body.name, req.body.email, req.body.password);
         if (!user) return res.status(404).json({ message: 'Loja não encontrada.' });
         if (user.conflict) return res.status(409).json({ message: 'E-mail já cadastrado.' });
-        return res.status(201).json({ user, token: createToken(user, tokenSecret) });
+        const token = await createAuthSession(user, sessionMaxAgeSeconds);
+        setSessionCookie(res, storeCookieName, token, sessionMaxAgeSeconds);
+        return res.status(201).json({ user });
     } catch (error) { return next(error); }
 });
 
@@ -270,7 +629,26 @@ app.post('/api/store/:slug/customer/login', loginLimiter, async (req, res, next)
     try {
         const user = await authenticateCustomer(cleanSlug(req.params.slug), req.body.email, req.body.password);
         if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
-        return res.json({ user, token: createToken(user, tokenSecret) });
+        const token = await createAuthSession(user, sessionMaxAgeSeconds);
+        setSessionCookie(res, storeCookieName, token, sessionMaxAgeSeconds);
+        return res.json({ user });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/session', async (req, res, next) => {
+    try {
+        const session = await requestSession(req, [storeCookieName]);
+        if (!session) return res.status(401).json({ message: 'Sessão expirada.' });
+        return res.json({ user: session.payload });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/logout', async (req, res, next) => {
+    try {
+        await Promise.all(requestTokens(req, [storeCookieName]).map(token => deleteAuthSession(token)));
+        clearSessionCookie(res, storeCookieName);
+        res.setHeader('Clear-Site-Data', '"cache", "cookies", "storage"');
+        return res.json({ ok: true });
     } catch (error) { return next(error); }
 });
 
@@ -279,6 +657,147 @@ app.put('/api/store/:slug/settings', requireStoreAdmin, async (req, res, next) =
         const tenant = await updateTenantBySlug(cleanSlug(req.params.slug), req.body);
         return tenant ? res.json(tenant) : res.status(404).json({ message: 'Loja não encontrada.' });
     } catch (error) { return next(error); }
+});
+
+const lookupBrasilApi = async (path: string) => {
+    const response = await fetch(`https://brasilapi.com.br/api/${path}`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'FeitosaSolucoes/1.0' },
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`BrasilAPI respondeu com HTTP ${response.status}.`);
+    return response.json() as Promise<any>;
+};
+
+app.get('/api/store/:slug/lookup/cnpj/:cnpj', requireStoreUser, publicLookupLimiter, async (req, res, next) => {
+    try {
+        const cnpj = String(req.params.cnpj || '').replace(/\D/g, '');
+        if (cnpj.length !== 14) return res.status(400).json({ message: 'CNPJ inválido.' });
+        const data = await lookupBrasilApi(`cnpj/v1/${cnpj}`);
+        if (!data) return res.status(404).json({ message: 'CNPJ não encontrado.' });
+        const establishment = data.estabelecimento || {};
+        const phone = data.ddd_telefone_1
+            || data.ddd_telefone_2
+            || [establishment.ddd1, establishment.telefone1].filter(Boolean).join('')
+            || [establishment.ddd2, establishment.telefone2].filter(Boolean).join('')
+            || data.telefone
+            || '';
+        return res.json({
+            document: cnpj,
+            name: String(data.nome_fantasia || establishment.nome_fantasia || data.razao_social || establishment.razao_social || '').trim(),
+            legalName: String(data.razao_social || establishment.razao_social || '').trim(),
+            email: String(data.email || establishment.email || data.correio_eletronico || '').trim().toLowerCase(),
+            phone: String(phone).trim(),
+            postalCode: String(data.cep || establishment.cep || '').replace(/\D/g, ''),
+            street: String(data.descricao_tipo_de_logradouro ? `${data.descricao_tipo_de_logradouro} ${data.logradouro || ''}` : data.logradouro || establishment.logradouro || '').trim(),
+            addressNumber: String(data.numero || establishment.numero || '').trim(),
+            complement: String(data.complemento || establishment.complemento || '').trim(),
+            neighborhood: String(data.bairro || establishment.bairro || '').trim(),
+            city: String(data.municipio || establishment.cidade?.nome || establishment.municipio || '').trim(),
+            state: String(data.uf || establishment.estado?.sigla || establishment.uf || '').trim().toUpperCase(),
+        });
+    } catch (error) {
+        console.error('Falha na consulta protegida de CNPJ:', error);
+        return res.status(502).json({ message: 'A consulta de CNPJ está temporariamente indisponível.' });
+    }
+});
+
+app.get('/api/store/:slug/lookup/cep/:cep', requireStoreUser, publicLookupLimiter, async (req, res, next) => {
+    try {
+        const cep = String(req.params.cep || '').replace(/\D/g, '');
+        if (cep.length !== 8) return res.status(400).json({ message: 'CEP inválido.' });
+        const data = await lookupBrasilApi(`cep/v1/${cep}`);
+        if (!data) return res.status(404).json({ message: 'CEP não encontrado.' });
+        return res.json({
+            postalCode: cep,
+            street: String(data.street || '').trim(),
+            neighborhood: String(data.neighborhood || '').trim(),
+            city: String(data.city || '').trim(),
+            state: String(data.state || '').trim().toUpperCase(),
+        });
+    } catch (error) {
+        console.error('Falha na consulta protegida de CEP:', error);
+        return res.status(502).json({ message: 'A consulta de CEP está temporariamente indisponível.' });
+    }
+});
+
+app.get('/api/store/:slug/purchase-invoices/lookup/:key', requireStoreAdmin, publicLookupLimiter, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const parsed = parseNfeAccessKey(req.params.key);
+        const existingRecords = await listStoreRecords(slug, 'purchase_invoices') || [];
+        const existing = (existingRecords as any[]).find(record => String(record.key || record.id || '').replace(/\D/g, '') === parsed.key);
+
+        let supplierDetails: any = { name: 'Fornecedor não identificado', cnpj: parsed.issuerDocument };
+        try {
+            const company = await lookupBrasilApi(`cnpj/v1/${parsed.issuerDocument}`);
+            const establishment = company?.estabelecimento || {};
+            if (company) supplierDetails = {
+                name: String(company.nome_fantasia || establishment.nome_fantasia || company.razao_social || establishment.razao_social || 'Fornecedor não identificado').trim(),
+                cnpj: parsed.issuerDocument,
+                email: String(company.email || establishment.email || company.correio_eletronico || '').trim().toLowerCase(),
+                phone: String(company.ddd_telefone_1 || company.ddd_telefone_2 || '').trim(),
+                address: [company.logradouro || establishment.logradouro, company.numero || establishment.numero,
+                    company.bairro || establishment.bairro, company.municipio || establishment.cidade?.nome,
+                    company.uf || establishment.estado?.sigla, company.cep || establishment.cep].filter(Boolean).join(', '),
+                category: 'Fornecedor de produtos',
+            };
+        } catch (error) {
+            console.error('Não foi possível complementar o emitente da NF-e:', error);
+        }
+
+        const base = {
+            id: parsed.key,
+            key: parsed.key,
+            supplier: supplierDetails.name,
+            supplierDetails,
+            metadata: {
+                stateCode: parsed.stateCode, yearMonth: parsed.yearMonth, model: parsed.model,
+                series: parsed.series, number: parsed.number, emissionType: parsed.emissionType,
+            },
+        };
+        const tenant = await resolveTenant(slug);
+        const certificateConfig = await getStoredNfseConfig(slug).catch(() => null);
+        if (certificateConfig?.certificateEncrypted && certificateConfig?.certificatePasswordEncrypted && tenant) {
+            try {
+                const certificate = getNfseCredentials(certificateConfig);
+                const distribution = await fetchNfeXmlByAccessKey({
+                    key: parsed.key,
+                    companyDocument: String((tenant as any).document || ''),
+                    companyState: String((tenant as any).state || ''),
+                    pfxBase64: certificate.pfxBase64,
+                    passphrase: certificate.passphrase,
+                });
+                if (distribution.xml) {
+                    const parsedInvoice = parseNfePurchaseXml(distribution.xml);
+                    return res.json({ ...base, ...parsedInvoice, source: 'sefaz', xml: distribution.xml });
+                }
+                if (existing?.items?.length) return res.json({
+                    ...base, ...existing, source: 'local', sefazStatus: distribution.status,
+                    message: 'A SEFAZ não liberou um XML mais completo; foram usados os itens já salvos nesta empresa.',
+                });
+                return res.json({
+                    ...base, source: 'key', items: [], sefazStatus: distribution.status,
+                    message: distribution.reason || 'A SEFAZ validou a consulta, mas não liberou o XML completo para este CNPJ. Preencha os itens manualmente ou importe o XML autorizado.',
+                });
+            } catch (error: any) {
+                console.error(`Falha na distribuição da NF-e ${parsed.key}:`, error?.message || 'erro desconhecido');
+                if (existing?.items?.length) return res.json({
+                    ...base, ...existing, source: 'local',
+                    message: 'A consulta à SEFAZ falhou; foram usados os itens já salvos nesta empresa.',
+                });
+                return res.json({ ...base, source: 'key', items: [], message: `${error?.message || 'A consulta automática à SEFAZ falhou.'} Você pode preencher os itens manualmente ou importar o XML.` });
+            }
+        }
+        if (existing?.items?.length) return res.json({ ...base, ...existing, source: 'local' });
+        return res.json({
+            ...base, source: 'key', items: [], requiresCertificate: true,
+            message: 'Chave válida. Para baixar os itens automaticamente, configure o certificado A1 da empresa. Você também pode preencher os itens manualmente.',
+        });
+    } catch (error: any) {
+        if (/chave|dígito/i.test(String(error?.message || ''))) return res.status(400).json({ message: error.message });
+        return next(error);
+    }
 });
 
 import {
@@ -309,7 +828,7 @@ const applyWhatsAppTemplate = (template: string, values: Record<string, string>)
 app.get('/api/store/:slug/whatsapp/status', requireStoreAdmin, async (req, res, next) => {
     try {
         const tenantId = cleanSlug(req.params.slug);
-        if (getWhatsAppStatus(tenantId).status === 'disconnected') {
+        if (req.query.restore !== '0' && getWhatsAppStatus(tenantId).status === 'disconnected') {
             await restoreWhatsAppSession(tenantId);
         }
         return res.json(getWhatsAppStatus(tenantId));
@@ -367,6 +886,191 @@ app.post('/api/store/:slug/whatsapp/disconnect', requireStoreAdmin, async (req, 
 import { sendTelegramMessage } from './services/telegram.js';
 import { sendEmail } from './services/email.js';
 
+const escapeEmailHtml = (value: unknown) => String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const dateKeyInManaus = (date = new Date()) => new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Manaus', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(date);
+
+const dateKeyToDayNumber = (dateKey: string) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateKey || ''));
+    return match ? Math.floor(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86_400_000) : NaN;
+};
+
+let paymentReminderSweepRunning = false;
+const processPaymentReminders = async () => {
+    if (paymentReminderSweepRunning) return;
+    paymentReminderSweepRunning = true;
+    try {
+        const todayKey = dateKeyInManaus();
+        const todayNumber = dateKeyToDayNumber(todayKey);
+        const tenants = (await listTenants()).filter((tenant: any) => tenant.active !== false);
+        for (const tenant of tenants as any[]) {
+            const slug = cleanSlug(tenant.storeSlug);
+            if (!slug) continue;
+            const emailConfig = await getIntegrationConfig(slug, 'email').catch(() => null);
+            const sales = await listStoreRecords(slug, 'sales') || [];
+            const orders = await listStoreRecords(slug, 'service_orders') || [];
+            const companyEmail = String(tenant.billingEmail || tenant.email || '').trim();
+            const businessName = String(tenant.businessName || tenant.shortName || 'Feitosa Soluções');
+
+            for (const sale of sales as any[]) {
+                let installments = [...(sale.installments || [])];
+                const linkedOrder = sale.osReference ? (orders as any[]).find(order => order.id === sale.osReference) : null;
+                const orderIsPaid = linkedOrder && (linkedOrder.paymentStatus === 'Pago' || ['Paga', 'Pago'].includes(linkedOrder.status));
+                const saleIsPaid = sale.paymentStatus === 'Pago' || sale.status === 'Pago';
+                if (orderIsPaid || saleIsPaid) {
+                    const paidAt = linkedOrder?.paidAt || sale.paidAt || new Date().toISOString();
+                    installments = installments.map(installment => ({
+                        ...installment, status: 'Pago', paid: true, paidAt: installment.paidAt || paidAt,
+                        paymentMethod: installment.paymentMethod || linkedOrder?.paymentMethod || sale.paymentMethod || 'Baixa pela O.S.',
+                    }));
+                    await upsertStoreRecord(slug, 'sales', { ...sale, installments, paymentStatus: 'Pago', status: 'Pago', paidTotal: Number(sale.total || linkedOrder?.totalValue || 0), balanceDue: 0 });
+                    continue;
+                }
+                if (!emailConfig?.host || !emailConfig?.user || !emailConfig?.pass) continue;
+                let changed = false;
+                for (let index = 0; index < installments.length; index += 1) {
+                    const installment = installments[index];
+                    if (installment.status === 'Pago' || installment.paid) continue;
+                    const dueNumber = dateKeyToDayNumber(installment.dueDate);
+                    if (!Number.isFinite(dueNumber)) continue;
+                    const daysUntilDue = dueNumber - todayNumber;
+                    const reminderType = daysUntilDue === 5 ? 'fiveDays' : daysUntilDue === 1 ? 'oneDay' : daysUntilDue === 0 ? 'dueToday' : daysUntilDue === -1 ? 'overdue' : '';
+                    if (!reminderType) continue;
+
+                    const reminderLog = { ...(installment.emailReminderLog || {}) };
+                    const customerEmail = String(sale.customerEmail || sale.userEmail || '').trim();
+                    const amount = Number(installment.value ?? installment.amount ?? 0);
+                    const formattedAmount = amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                    const dueDate = String(installment.dueDate || '').split('-').reverse().join('/');
+                    const number = installment.number || installment.installmentNumber || index + 1;
+                    const totalInstallments = installments.length;
+                    const isOverdue = reminderType === 'overdue';
+                    const headline = isOverdue ? 'Pagamento em atraso' : daysUntilDue === 0 ? 'Pagamento com vencimento hoje' : 'Lembrete de vencimento';
+                    const message = isOverdue
+                        ? `A parcela ${number}/${totalInstallments}, no valor de ${formattedAmount}, venceu em ${dueDate} e permanece pendente. Entre em contato para regularização.`
+                        : `A parcela ${number}/${totalInstallments}, no valor de ${formattedAmount}, vence em ${dueDate}. Se o pagamento já foi realizado, desconsidere este lembrete.`;
+                    const html = `<div style="font-family:Arial,sans-serif;background:#f1f5f9;padding:24px"><div style="max-width:620px;margin:auto;background:#fff;border-radius:14px;overflow:hidden"><div style="background:#2441b4;color:#fff;padding:22px 28px;border-bottom:5px solid #0db8dc"><strong style="font-size:22px">${escapeEmailHtml(businessName)}</strong></div><div style="padding:28px;color:#1e293b;line-height:1.6"><h2 style="margin-top:0">${escapeEmailHtml(headline)}</h2><p>Olá, ${escapeEmailHtml(sale.customerName || 'cliente')}.</p><p>${escapeEmailHtml(message)}</p><p style="color:#64748b;font-size:13px">Referência: O.S. ${escapeEmailHtml(sale.osReference || sale.id)}</p></div></div></div>`;
+
+                    if (customerEmail && !reminderLog[`${reminderType}Customer`]) {
+                        try {
+                            await sendEmail(emailConfig, customerEmail, `${headline} — ${businessName}`, html);
+                            reminderLog[`${reminderType}Customer`] = new Date().toISOString();
+                            changed = true;
+                        } catch (error: any) {
+                            console.error(`Falha no lembrete ${reminderType} da loja ${slug}:`, error?.message || 'erro de envio');
+                        }
+                    }
+                    if (isOverdue && companyEmail && companyEmail.toLowerCase() !== customerEmail.toLowerCase() && !reminderLog.overdueCompany) {
+                        const companyHtml = html.replace(`Olá, ${escapeEmailHtml(sale.customerName || 'cliente')}.`, `Atenção: cobrança de ${escapeEmailHtml(sale.customerName || 'cliente')}.`);
+                        try {
+                            await sendEmail(emailConfig, companyEmail, `Cobrança vencida para acompanhamento — ${sale.customerName || 'Cliente'}`, companyHtml);
+                            reminderLog.overdueCompany = new Date().toISOString();
+                            changed = true;
+                        } catch (error: any) {
+                            console.error(`Falha no aviso de atraso da loja ${slug}:`, error?.message || 'erro de envio');
+                        }
+                    }
+                    installments[index] = { ...installment, emailReminderLog: reminderLog };
+                }
+                if (changed) await upsertStoreRecord(slug, 'sales', { ...sale, installments, reminderCheckedAt: new Date().toISOString() });
+            }
+        }
+    } catch (error) {
+        console.error('Falha ao processar lembretes de pagamento:', error);
+    } finally {
+        paymentReminderSweepRunning = false;
+    }
+};
+
+const startPaymentReminderScheduler = () => {
+    const firstRun = setTimeout(() => void processPaymentReminders(), 30_000);
+    const interval = setInterval(() => void processPaymentReminders(), 60 * 60 * 1000);
+    firstRun.unref?.();
+    interval.unref?.();
+};
+
+let automaticBackupSweepRunning = false;
+const processAutomaticGoogleDriveBackups = async () => {
+    if (automaticBackupSweepRunning) return;
+    automaticBackupSweepRunning = true;
+    try {
+        try { googleDriveClient(); } catch { return; }
+        const now = new Date();
+        const today = dateKeyInManaus(now);
+        const time = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'America/Manaus', hour: '2-digit', minute: '2-digit', hour12: false,
+        }).format(now);
+        const weekdayName = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Manaus', weekday: 'short' }).format(now);
+        const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekdayName);
+        const tenants = (await listTenants()).filter((tenant: any) => tenant.active !== false);
+        for (const tenant of tenants as any[]) {
+            const slug = cleanSlug(tenant.storeSlug);
+            const config = await getIntegrationConfig(slug, 'googledrive').catch(() => null);
+            if (!config?.enabled || !config?.refreshToken) continue;
+            if (config.lastBackupAt && dateKeyInManaus(new Date(config.lastBackupAt)) === today) continue;
+            if (String(config.hour || '03:00') > time) continue;
+            if (config.frequency === 'weekly' && Number(config.weekday || 0) !== weekday) continue;
+            try {
+                const result = await performGoogleDriveBackup(slug);
+                await writeAudit(slug, { name: 'Backup automático' }, 'BACKUP', 'googledrive', result.fileId);
+            } catch (error: any) {
+                console.error(`Falha no backup automático da loja ${slug}:`, error?.message || 'erro desconhecido');
+                const current = await getIntegrationConfig(slug, 'googledrive').catch(() => null);
+                if (current) await upsertStoreRecord(slug, 'integrations', protectIntegrationRecord(slug, {
+                    ...current,
+                    id: 'googledrive',
+                    lastBackupStatus: 'error',
+                    lastError: String(error?.message || 'Falha no backup automático.').slice(0, 300),
+                    lastAttemptAt: new Date().toISOString(),
+                }, current));
+            }
+        }
+    } catch (error) {
+        console.error('Falha ao verificar backups automáticos:', error);
+    } finally {
+        automaticBackupSweepRunning = false;
+    }
+};
+
+const startAutomaticBackupScheduler = () => {
+    const firstRun = setTimeout(() => void processAutomaticGoogleDriveBackups(), 90_000);
+    const interval = setInterval(() => void processAutomaticGoogleDriveBackups(), 60 * 60 * 1000);
+    firstRun.unref?.();
+    interval.unref?.();
+};
+
+let automaticCalendarSweepRunning = false;
+const processAutomaticCalendarSync = async () => {
+    if (automaticCalendarSweepRunning) return;
+    automaticCalendarSweepRunning = true;
+    try {
+        try { googleDriveClient(); } catch { return; }
+        const tenants = (await listTenants()).filter((tenant: any) => tenant.active !== false);
+        for (const tenant of tenants as any[]) {
+            const slug = cleanSlug(tenant.storeSlug);
+            const config = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null);
+            if (!slug || !config?.enabled) continue;
+            try {
+                await syncGoogleCalendarForSlug(slug);
+            } catch (error: any) {
+                console.error(`Falha ao sincronizar Google Agenda da loja ${slug}:`, error?.message || 'erro desconhecido');
+            }
+        }
+    } finally {
+        automaticCalendarSweepRunning = false;
+    }
+};
+
+const startAutomaticCalendarScheduler = () => {
+    const firstRun = setTimeout(() => void processAutomaticCalendarSync(), 120_000);
+    const interval = setInterval(() => void processAutomaticCalendarSync(), 15 * 60 * 1000);
+    firstRun.unref?.();
+    interval.unref?.();
+};
+
 // Unified notification endpoint
 app.post('/api/store/:slug/notify', requireStoreAdmin, async (req, res, next) => {
     try {
@@ -400,10 +1104,38 @@ app.post('/api/store/:slug/notify', requireStoreAdmin, async (req, res, next) =>
                 await sendWhatsAppMessage(tenantId, to, message);
             }
         } else if (channel === 'telegram') {
-            await sendTelegramMessage(null, message, to || undefined);
+            const telegramConfig = await getIntegrationConfig(tenantId, 'telegram');
+            await sendTelegramMessage(telegramConfig, message, to || undefined);
         } else if (channel === 'email') {
             if (!to) return res.status(400).json({ message: 'Campo "to" (e-mail) é obrigatório para E-mail.' });
-            await sendEmail(null, to, subject || 'Notificação', `<p>${message.replace(/\n/g, '<br>')}</p>`);
+            if (pdfBase64 && (pdfBase64.length > 2_800_000 || !/^[A-Za-z0-9+/=]+$/.test(pdfBase64))) {
+                return res.status(400).json({ message: 'PDF inválido ou muito grande.' });
+            }
+            const emailConfig = await getIntegrationConfig(tenantId, 'email');
+            const safeHtml = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            const tenant = await resolveTenant(tenantId);
+            const businessName = String(tenant?.businessName || tenant?.name || 'Feitosa Soluções');
+            const premiumHtml = `
+                <div style="margin:0;background:#f1f5f9;padding:28px 12px;font-family:Arial,sans-serif;color:#1e293b">
+                    <div style="max-width:680px;margin:auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 10px 35px rgba(15,23,42,.12)">
+                        <div style="background:#2441b4;border-bottom:5px solid #0db8dc;padding:26px 32px;color:#ffffff">
+                            <div style="font-size:12px;letter-spacing:1.4px;text-transform:uppercase;opacity:.8">Atendimento premium</div>
+                            <div style="font-size:24px;font-weight:700;margin-top:5px">${businessName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                        </div>
+                        <div style="padding:30px 32px;font-size:15px;line-height:1.65">
+                            ${safeHtml}
+                            ${pdfBase64 ? '<p style="margin-top:24px;padding:14px 16px;background:#eff6ff;border-left:4px solid #2441b4;border-radius:7px">A sua Ordem de Serviço detalhada segue anexada em PDF.</p>' : ''}
+                        </div>
+                        <div style="padding:17px 32px;background:#f8fafc;color:#64748b;font-size:12px">Mensagem enviada com segurança pelo sistema ${businessName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}.</div>
+                    </div>
+                </div>`;
+            const attachments = pdfBase64 ? [{
+                filename: String(pdfFilename || 'ordem-de-servico.pdf').replace(/[^a-zA-Z0-9._-]/g, '_'),
+                content: pdfBase64,
+                encoding: 'base64' as const,
+                contentType: 'application/pdf',
+            }] : [];
+            await sendEmail(emailConfig, to, subject || 'Notificação', premiumHtml, attachments);
         } else {
             return res.status(400).json({ message: 'Canal inválido. Use: whatsapp, telegram ou email.' });
         }
@@ -435,7 +1167,7 @@ app.post('/api/store/:slug/users', requireStoreAdmin, async (req, res, next) => 
         await writeAudit(cleanSlug(req.params.slug), (req as any).auth, 'UPDATE', 'users', user.id);
         return res.status(201).json(user);
     } catch (error: any) {
-        if (error?.code === '23505') return res.status(409).json({ message: 'Este e-mail já está em uso.' });
+        if (error?.code === '23505' || error?.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Este e-mail já está em uso.' });
         if (String(error?.message).includes('senha')) return res.status(400).json({ message: error.message });
         return next(error);
     }
@@ -516,6 +1248,36 @@ app.get('/api/store/:slug/nfse/config', requireStoreAdmin, async (req, res, next
     } catch (error) { return next(error); }
 });
 
+app.get('/api/store/:slug/fiscal-certificate', requireStoreAdmin, async (req, res, next) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(publicFiscalCertificate(await getStoredNfseConfig(cleanSlug(req.params.slug)), nfseSecret.length >= 32));
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/fiscal-certificate', requireStoreAdmin, async (req, res, next) => {
+    try {
+        if (nfseSecret.length < 32) return res.status(503).json({ message: 'Configure NFSE_SECRET_KEY no servidor com pelo menos 32 caracteres antes de salvar o certificado.' });
+        const validation = fiscalCertificateSchema.safeParse(req.body);
+        if (!validation.success) return res.status(400).json({ message: 'Selecione um certificado A1 de até 2 MB e informe sua senha.' });
+        const { certificateBase64, certificatePassword } = validation.data;
+        const fields = prepareFiscalCertificate(certificateBase64, certificatePassword, nfseSecret);
+        const slug = cleanSlug(req.params.slug);
+        const current = await getStoredNfseConfig(slug) || {};
+        const saved = await upsertStoreRecord(slug, 'integrations', {
+            ...current, ...fields, id: 'nfse',
+            certificateBase64: undefined, certificatePassword: undefined,
+            updatedAt: new Date().toISOString(),
+        });
+        await writeAudit(slug, (req as any).auth, 'UPDATE', 'integrations', 'fiscal-certificate');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(publicFiscalCertificate(saved, true));
+    } catch (error: any) {
+        if (/certificado|NFSE_SECRET_KEY/i.test(String(error?.message || ''))) return res.status(400).json({ message: error.message });
+        return next(error);
+    }
+});
+
 app.post('/api/store/:slug/nfse/config', requireStoreAdmin, async (req, res, next) => {
     try {
         if (!nfseSecret) return res.status(503).json({ message: 'Configure NFSE_SECRET_KEY no servidor antes de salvar o certificado.' });
@@ -535,16 +1297,7 @@ app.post('/api/store/:slug/nfse/config', requireStoreAdmin, async (req, res, nex
         if (input.certificateBase64) {
             if (!input.certificatePassword) return res.status(400).json({ message: 'Informe a senha do novo certificado A1.' });
             const pfxBase64 = input.certificateBase64.replace(/^data:[^;]+;base64,/, '');
-            const certificate = inspectNfseCertificate(pfxBase64, input.certificatePassword);
-            if (new Date(certificate.validTo) <= new Date()) return res.status(400).json({ message: 'O certificado A1 informado está vencido.' });
-            certificateFields = {
-                certificateEncrypted: encryptNfseSecret(pfxBase64, nfseSecret),
-                certificatePasswordEncrypted: encryptNfseSecret(input.certificatePassword, nfseSecret),
-                certificateSubject: certificate.subject,
-                certificateValidFrom: certificate.validFrom,
-                certificateValidTo: certificate.validTo,
-                certificateFingerprint: certificate.fingerprint,
-            };
+            certificateFields = prepareFiscalCertificate(pfxBase64, input.certificatePassword, nfseSecret);
         }
         if (input.enabled && !certificateFields.certificateEncrypted) return res.status(400).json({ message: 'Selecione um certificado digital A1 (.pfx ou .p12) antes de habilitar a emissão.' });
         const saved = await upsertStoreRecord(slug, 'integrations', {
@@ -618,6 +1371,13 @@ app.post('/api/store/:slug/nfse/issue/:orderId', requireStoreAdmin, async (req, 
         const authorized = transmission.status >= 200 && transmission.status < 300 && Boolean(transmission.authorizedXml);
         const accessKey = transmission.authorizedXml.match(/Id=["']NFS([^"']+)["']/)?.[1] || '';
         const nfseNumber = transmission.authorizedXml.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || '';
+        const fiscalXmlValue = (tag: string) => transmission.authorizedXml.match(
+            new RegExp(`<(?:[\\w.-]+:)?${tag}[^>]*>([^<]*)<\\/(?:[\\w.-]+:)?${tag}>`),
+        )?.[1]?.trim() || '';
+        const fiscalNumber = (tag: string) => {
+            const raw = fiscalXmlValue(tag);
+            return raw === '' ? undefined : Number(raw);
+        };
         const issuedAt = new Date().toISOString();
         const documentId = crypto.randomUUID();
         const fiscalDocument = await upsertStoreRecord(slug, 'fiscal_documents', {
@@ -649,6 +1409,26 @@ app.post('/api/store/:slug/nfse/issue/:orderId', requireStoreAdmin, async (req, 
             accessKey,
             nfseNumber,
             issuedAt,
+            competence: String(order.completedAt || order.createdAt || issuedAt).slice(0, 10),
+            dpsIssuedAt: dps.emittedAt,
+            issuerType: 'Prestador',
+            purpose: 'NFS-e Normal',
+            taxDescription: fiscalXmlValue('xTribMun') || fiscalXmlValue('xTribNac'),
+            nbsCode: fiscalXmlValue('cNBS'),
+            issBase: fiscalNumber('vBC'),
+            issRate: fiscalNumber('pAliq'),
+            issValue: fiscalNumber('vISSQN'),
+            unconditionalDiscount: fiscalNumber('vDescIncond'),
+            conditionalDiscount: fiscalNumber('vDescCond'),
+            totalWithheld: fiscalNumber('vTotalRet'),
+            netValue: fiscalNumber('vLiq'),
+            ibsCbsTotal: (() => {
+                const ibs = fiscalNumber('vIBSTot');
+                const cbs = fiscalNumber('vCBS');
+                return ibs === undefined && cbs === undefined ? undefined : Number(ibs || 0) + Number(cbs || 0);
+            })(),
+            totalWithIbsCbs: fiscalNumber('vTotNF'),
+            complementaryInfo: fiscalXmlValue('xOutInf'),
         };
         await upsertStoreRecord(slug, 'service_orders', { ...order, nfseHomologation: nfseSummary });
         await writeAudit(slug, (req as any).auth, authorized ? 'AUTHORIZE' : 'REJECT', 'fiscal_documents', documentId);
@@ -668,12 +1448,144 @@ app.post('/api/store/:slug/nfse/issue/:orderId', requireStoreAdmin, async (req, 
     }
 });
 
+app.get('/api/store/:slug/agenda/events', requireStoreUser, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        if (['admin', 'gerente', 'saas-admin'].includes(String((req as any).auth?.role || ''))) {
+            return res.json(await calendarEventsForSlug(slug));
+        }
+        const appointments = await listStoreRecords(slug, 'appointments') || [];
+        return res.json((appointments as any[]).map(item => ({ ...item, source: item.source || 'appointment', readOnly: false })));
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/google/calendar/status', requireStoreUser, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const [driveConfig, calendarConfig] = await Promise.all([
+            getIntegrationConfig(slug, 'googledrive').catch(() => null),
+            getIntegrationConfig(slug, 'googlecalendar').catch(() => null),
+        ]);
+        let serverConfigured = true;
+        try { googleDriveClient(); } catch { serverConfigured = false; }
+        return res.json({
+            serverConfigured,
+            connected: Boolean(driveConfig?.refreshToken),
+            enabled: Boolean(calendarConfig?.enabled),
+            calendarId: calendarConfig?.calendarId || 'primary',
+            timeZone: calendarConfig?.timeZone || 'America/Manaus',
+            lastSyncAt: calendarConfig?.lastSyncAt || '',
+            lastSyncStatus: calendarConfig?.lastSyncStatus || '',
+            lastSyncCount: Number(calendarConfig?.lastSyncCount || 0),
+            lastRemovedCount: Number(calendarConfig?.lastRemovedCount || 0),
+            lastError: calendarConfig?.lastError || '',
+        });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/google/calendar/connect', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const authUrl = createGoogleDriveAuthorizationUrl(googleDriveClient(), signGoogleDriveState(slug, 'agenda'));
+        return res.json({ authUrl });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/google/status', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const [driveConfig, calendarConfig] = await Promise.all([
+            getIntegrationConfig(slug, 'googledrive').catch(() => null),
+            getIntegrationConfig(slug, 'googlecalendar').catch(() => null),
+        ]);
+        let serverConfigured = true;
+        try { googleDriveClient(); } catch { serverConfigured = false; }
+        return res.json({
+            serverConfigured,
+            connected: Boolean(driveConfig?.refreshToken),
+            connectedAt: driveConfig?.connectedAt || '',
+            driveEnabled: Boolean(driveConfig?.enabled),
+            calendarEnabled: Boolean(calendarConfig?.enabled),
+            lastBackupAt: driveConfig?.lastBackupAt || '',
+            lastSyncAt: calendarConfig?.lastSyncAt || '',
+        });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/google/connect', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const authUrl = createGoogleDriveAuthorizationUrl(googleDriveClient(), signGoogleDriveState(slug, 'integracoes'));
+        return res.json({ authUrl });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/google/disconnect', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        await deleteStoreRecord(slug, 'integrations', 'googledrive');
+        const calendar = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null);
+        if (calendar) await upsertStoreRecord(slug, 'integrations', {
+            ...calendar, id: 'googlecalendar', enabled: false, disconnectedAt: new Date().toISOString(),
+        });
+        await writeAudit(slug, (req as any).auth, 'DISCONNECT', 'integrations', 'google');
+        return res.json({ disconnected: true });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/google/calendar/settings', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const driveConfig = await getIntegrationConfig(slug, 'googledrive').catch(() => null);
+        if (!driveConfig?.refreshToken) return res.status(400).json({ message: 'Conecte a conta Google desta empresa primeiro.' });
+        const current = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null) || {};
+        const calendarId = String(req.body?.calendarId || 'primary').trim().slice(0, 250) || 'primary';
+        const saved = await upsertStoreRecord(slug, 'integrations', {
+            ...current,
+            id: 'googlecalendar',
+            enabled: Boolean(req.body?.enabled),
+            calendarId,
+            timeZone: 'America/Manaus',
+            updatedAt: new Date().toISOString(),
+        });
+        await writeAudit(slug, (req as any).auth, 'UPDATE', 'calendar', 'googlecalendar');
+        if (saved.enabled) scheduleCalendarSync(slug);
+        return res.json({ enabled: Boolean(saved.enabled), calendarId, timeZone: 'America/Manaus' });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/google/calendar/sync', requireStoreAdmin, async (req, res, next) => {
+    const slug = cleanSlug(req.params.slug);
+    try {
+        const result = await syncGoogleCalendarForSlug(slug);
+        await writeAudit(slug, (req as any).auth, 'SYNC', 'calendar', 'googlecalendar');
+        return res.json(result);
+    } catch (error: any) {
+        const current = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null);
+        if (current) await upsertStoreRecord(slug, 'integrations', {
+            ...current, id: 'googlecalendar', lastSyncStatus: 'error',
+            lastError: String(error?.message || 'Falha ao sincronizar.').slice(0, 300),
+            lastAttemptAt: new Date().toISOString(),
+        });
+        return next(error);
+    }
+});
+
 app.get('/api/store/:slug/:collection', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         const records = await listStoreRecords(cleanSlug(req.params.slug), req.params.collection);
         if (!records) return res.status(404).json({ message: 'Loja não encontrada.' });
         if (req.params.collection === 'integrations') {
-            return res.json(records.map((record: any) => record.id === 'nfse' ? publicNfseConfig(record) : record));
+            const slug = cleanSlug(req.params.slug);
+            const safeRecords = [];
+            for (const record of records as any[]) {
+                const protectedRecord = protectIntegrationRecord(slug, record, record);
+                if (JSON.stringify(protectedRecord) !== JSON.stringify(record)) {
+                    await upsertStoreRecord(slug, 'integrations', protectedRecord);
+                }
+                safeRecords.push(sanitizeIntegrationRecord(protectedRecord));
+            }
+            return res.json(safeRecords);
         }
         return res.json(records);
     } catch (error) { return next(error); }
@@ -683,33 +1595,68 @@ app.post('/api/store/:slug/:collection', requireStoreUser, requireCollectionAcce
     try {
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ message: 'Dados inválidos.' });
         if (req.params.collection === 'integrations' && req.body.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
-        const record = await upsertStoreRecord(cleanSlug(req.params.slug), req.params.collection, req.body);
+        const slug = cleanSlug(req.params.slug);
+        let input = req.body;
+        if (req.params.collection === 'integrations') {
+            const currentRecords = await listStoreRecords(slug, 'integrations') || [];
+            const current = (currentRecords as any[]).find(record => record.id === req.body.id) || {};
+            input = protectIntegrationRecord(slug, req.body, current);
+        }
+        const record = req.params.collection === 'service_orders'
+            ? await upsertServiceOrderWithStock(slug, input)
+            : await upsertStoreRecord(slug, req.params.collection, input);
         if (!record) return res.status(404).json({ message: 'Loja não encontrada.' });
+        if (req.params.collection === 'sales') await syncSalePaymentToServiceOrder(slug, record);
         await writeAudit(cleanSlug(req.params.slug), (req as any).auth, 'CREATE', req.params.collection, record.id);
-        return res.status(201).json(record);
+        if (['appointments', 'sales', 'expenses'].includes(req.params.collection)) scheduleCalendarSync(slug);
+        return res.status(201).json(req.params.collection === 'integrations' ? sanitizeIntegrationRecord(record) : record);
     }
-    catch (error) { return next(error); }
+    catch (error: any) {
+        if (req.params.collection === 'service_orders' && /estoque|peça/i.test(String(error?.message || ''))) {
+            return res.status(409).json({ message: String(error.message) });
+        }
+        return next(error);
+    }
 });
 
 app.put('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ message: 'Dados inválidos.' });
         if (req.params.collection === 'integrations' && req.params.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
-        const record = await upsertStoreRecord(cleanSlug(req.params.slug), req.params.collection, { ...req.body, id: req.params.id });
+        const slug = cleanSlug(req.params.slug);
+        let input = { ...req.body, id: req.params.id };
+        if (req.params.collection === 'integrations') {
+            const currentRecords = await listStoreRecords(slug, 'integrations') || [];
+            const current = (currentRecords as any[]).find(record => record.id === req.params.id) || {};
+            input = protectIntegrationRecord(slug, input, current);
+        }
+        const record = req.params.collection === 'service_orders'
+            ? await upsertServiceOrderWithStock(slug, input)
+            : await upsertStoreRecord(slug, req.params.collection, input);
         if (!record) return res.status(404).json({ message: 'Loja não encontrada.' });
+        if (req.params.collection === 'sales') await syncSalePaymentToServiceOrder(slug, record);
         await writeAudit(cleanSlug(req.params.slug), (req as any).auth, 'UPDATE', req.params.collection, record.id);
-        return res.json(record);
+        if (['appointments', 'sales', 'expenses'].includes(req.params.collection)) scheduleCalendarSync(slug);
+        return res.json(req.params.collection === 'integrations' ? sanitizeIntegrationRecord(record) : record);
     }
-    catch (error) { return next(error); }
+    catch (error: any) {
+        if (req.params.collection === 'service_orders' && /estoque|peça/i.test(String(error?.message || ''))) {
+            return res.status(409).json({ message: String(error.message) });
+        }
+        return next(error);
+    }
 });
 
 app.delete('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionAccess, async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
         if (req.params.collection === 'integrations' && req.params.id === 'nfse') return res.status(400).json({ message: 'A configuração fiscal deve ser desativada, não excluída pela rota comum.' });
-        const deleted = await deleteStoreRecord(slug, req.params.collection, req.params.id);
-        if (deleted) await writeAudit(slug, (req as any).auth, 'DELETE', req.params.collection, req.params.id);
-        return res.json({ deleted });
+        const deletion = req.params.collection === 'service_orders'
+            ? await deleteServiceOrderWithStock(slug, req.params.id)
+            : { deleted: await deleteStoreRecord(slug, req.params.collection, req.params.id), returnedItems: 0 };
+        if (deletion?.deleted) await writeAudit(slug, (req as any).auth, 'DELETE', req.params.collection, req.params.id);
+        if (deletion?.deleted && ['appointments', 'sales', 'expenses', 'service_orders'].includes(req.params.collection)) scheduleCalendarSync(slug);
+        return res.json(deletion || { deleted: false, returnedItems: 0 });
     }
     catch (error) { return next(error); }
 });
@@ -764,13 +1711,13 @@ const sendPixThankYou = async (slug: string, order: any, paymentId: string, paid
 app.post('/api/store/:slug/mercadopago/config', requireStoreAdmin, async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
-        const records = await listStoreRecords(slug, 'integrations');
-        const current = (records || []).find((record: any) => record.id === 'mercadopago') || {};
+        const current = await getIntegrationConfig(slug, 'mercadopago') || {};
         const suppliedAccessToken = String(req.body.accessToken || '');
         const suppliedWebhookSecret = String(req.body.webhookSecret || '');
         const accessToken = suppliedAccessToken.startsWith('•') ? current.accessToken : suppliedAccessToken;
         const webhookSecret = suppliedWebhookSecret.startsWith('•') ? current.webhookSecret : suppliedWebhookSecret;
         const publicBaseUrl = normalizePublicBaseUrl(req.body.publicBaseUrl);
+        const enabled = req.body.enabled !== false;
 
         if (!accessToken) return res.status(400).json({ message: 'Access Token é obrigatório.' });
         if (publicBaseUrl && !validPublicBaseUrl(publicBaseUrl)) {
@@ -779,7 +1726,7 @@ app.post('/api/store/:slug/mercadopago/config', requireStoreAdmin, async (req, r
 
         const webhookUrl = publicBaseUrl ? `${publicBaseUrl}/api/public/${slug}/mercadopago/webhook` : '';
         const autoReconciliationEnabled = Boolean(webhookSecret && webhookUrl);
-        await upsertStoreRecord(slug, 'integrations', {
+        const storedConfig = protectIntegrationRecord(slug, {
             ...current,
             id: 'mercadopago',
             accessToken,
@@ -787,10 +1734,12 @@ app.post('/api/store/:slug/mercadopago/config', requireStoreAdmin, async (req, r
             publicBaseUrl,
             webhookUrl,
             sandbox: !!req.body.sandbox,
+            enabled,
             autoReconciliationEnabled,
             updatedAt: new Date().toISOString()
-        });
-        return res.json({ ok: true, webhookUrl, autoReconciliationEnabled });
+        }, {});
+        await upsertStoreRecord(slug, 'integrations', storedConfig);
+        return res.json({ ok: true, enabled, webhookUrl, autoReconciliationEnabled });
     } catch (error) { return next(error); }
 });
 
@@ -798,10 +1747,9 @@ app.post('/api/store/:slug/mercadopago/config', requireStoreAdmin, async (req, r
 app.post('/api/store/:slug/mercadopago/preference', requireStoreAdmin, async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
-        const records = await listStoreRecords(slug, 'integrations');
-        const mpConfig = (records || []).find((r: any) => r.id === 'mercadopago');
+        const mpConfig = await getIntegrationConfig(slug, 'mercadopago');
 
-        if (!mpConfig?.accessToken) {
+        if (!mpConfig?.accessToken || mpConfig.enabled === false) {
             return res.status(400).json({ message: 'Mercado Pago não configurado. Acesse Integrações → Mercado Pago e insira seu Access Token.' });
         }
 
@@ -851,9 +1799,8 @@ app.post('/api/store/:slug/mercadopago/preference', requireStoreAdmin, async (re
 app.post('/api/store/:slug/mercadopago/pix', requireStoreAdmin, async (req, res) => {
     try {
         const slug = cleanSlug(req.params.slug);
-        const records = await listStoreRecords(slug, 'integrations');
-        const mpConfig = (records || []).find((record: any) => record.id === 'mercadopago');
-        if (!mpConfig?.accessToken) {
+        const mpConfig = await getIntegrationConfig(slug, 'mercadopago');
+        if (!mpConfig?.accessToken || mpConfig.enabled === false) {
             return res.status(400).json({ message: 'Mercado Pago não configurado.' });
         }
 
@@ -916,9 +1863,8 @@ app.post('/api/store/:slug/mercadopago/pix', requireStoreAdmin, async (req, res)
 app.get('/api/store/:slug/mercadopago/payments/latest', requireStoreAdmin, async (req, res) => {
     try {
         const slug = cleanSlug(req.params.slug);
-        const integrations = await listStoreRecords(slug, 'integrations');
-        const mpConfig = (integrations || []).find((record: any) => record.id === 'mercadopago');
-        if (!mpConfig?.accessToken) {
+        const mpConfig = await getIntegrationConfig(slug, 'mercadopago');
+        if (!mpConfig?.accessToken || mpConfig.enabled === false) {
             return res.status(400).json({ message: 'Mercado Pago não configurado.' });
         }
 
@@ -952,9 +1898,8 @@ app.get('/api/store/:slug/mercadopago/payments/:paymentId/status', requireStoreA
             return res.status(400).json({ message: 'Identificador do pagamento inválido.' });
         }
 
-        const records = await listStoreRecords(slug, 'integrations');
-        const mpConfig = (records || []).find((record: any) => record.id === 'mercadopago');
-        if (!mpConfig?.accessToken) {
+        const mpConfig = await getIntegrationConfig(slug, 'mercadopago');
+        if (!mpConfig?.accessToken || mpConfig.enabled === false) {
             return res.status(400).json({ message: 'Mercado Pago não configurado.' });
         }
 
@@ -1026,9 +1971,8 @@ app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
         const notificationType = String(req.query.type || req.body?.type || '');
         if (notificationType && notificationType !== 'payment') return res.sendStatus(200);
 
-        const records = await listStoreRecords(slug, 'integrations');
-        const mpConfig = (records || []).find((record: any) => record.id === 'mercadopago');
-        if (!mpConfig?.accessToken || !mpConfig?.webhookSecret) return res.sendStatus(503);
+        const mpConfig = await getIntegrationConfig(slug, 'mercadopago');
+        if (!mpConfig?.accessToken || mpConfig.enabled === false || !mpConfig?.webhookSecret) return res.sendStatus(503);
 
         const dataId = String(req.query['data.id'] || req.body?.data?.id || '');
         if (!dataId) return res.status(400).json({ message: 'Identificador do pagamento ausente.' });
@@ -1168,19 +2112,148 @@ app.post('/api/public/:slug/mercadopago/webhook', async (req, res, next) => {
     }
 });
 
-// Backup completo do tenant (download JSON)
+// Backup completo, restauração transacional e Google Drive
 app.get('/api/store/:slug/backup/download', requireStoreAdmin, async (req, res, next) => {
     try {
         const slug = cleanSlug(req.params.slug);
-        const collections = ['products', 'customers', 'sales', 'services', 'service_orders', 'suppliers', 'appointments', 'integrations'];
-        const backup: Record<string, any> = { exportedAt: new Date().toISOString(), tenant: slug };
-        for (const col of collections) {
-            try { backup[col] = await listStoreRecords(slug, col) || []; }
-            catch { backup[col] = []; }
-        }
+        const backup = await buildBackupForSlug(slug);
         res.setHeader('Content-Disposition', `attachment; filename="backup-${slug}-${new Date().toISOString().slice(0, 10)}.json"`);
         res.setHeader('Content-Type', 'application/json');
         return res.send(JSON.stringify(backup, null, 2));
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/backup/validate', requireStoreAdmin, async (req, res) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const validated = validateBackupDocument(req.body?.backup, slug, dataEncryptionSecret);
+        return res.json({
+            valid: true,
+            exportedAt: validated.exportedAt,
+            legacy: validated.legacy,
+            totals: Object.fromEntries(Object.entries(validated.collections).map(([key, records]) => [key, (records as any[]).length])),
+            warning: validated.legacy ? 'Backup antigo: somente os módulos presentes no arquivo serão restaurados.' : '',
+        });
+    } catch (error: any) {
+        return res.status(400).json({ message: error?.message || 'Arquivo de backup inválido.' });
+    }
+});
+
+app.post('/api/store/:slug/backup/restore', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        if (String(req.body?.confirmation || '') !== `RESTAURAR ${slug}`) {
+            return res.status(400).json({ message: `Digite RESTAURAR ${slug} para confirmar.` });
+        }
+        const validated = validateBackupDocument(req.body?.backup, slug, dataEncryptionSecret);
+        const collections = await prepareRestoredCollections(slug, validated.collections);
+        await replaceStoreCollections(slug, collections, validated.profile);
+        await writeAudit(slug, (req as any).auth, 'RESTORE', 'backup', String(validated.exportedAt || ''));
+        return res.json({ message: 'Backup restaurado com sucesso.', restoredAt: new Date().toISOString() });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/backup/status', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const config = await getIntegrationConfig(slug, 'googledrive').catch(() => null);
+        let serverConfigured = true;
+        try { googleDriveClient(); } catch { serverConfigured = false; }
+        return res.json({
+            serverConfigured,
+            connected: Boolean(config?.refreshToken),
+            enabled: Boolean(config?.enabled),
+            frequency: config?.frequency || 'daily',
+            hour: config?.hour || '03:00',
+            weekday: Number(config?.weekday ?? 0),
+            lastBackupAt: config?.lastBackupAt || '',
+            lastBackupStatus: config?.lastBackupStatus || '',
+            lastError: config?.lastError || '',
+        });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/store/:slug/backup/google/connect', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const authUrl = createGoogleDriveAuthorizationUrl(googleDriveClient(), signGoogleDriveState(slug));
+        return res.json({ authUrl });
+    } catch (error) { return next(error); }
+});
+
+app.get('/api/backup/google/callback', async (req, res) => {
+    let slug = '';
+    let returnTo: GoogleReturnTarget = 'backup';
+    try {
+        ({ slug, returnTo } = verifyGoogleDriveState(String(req.query.state || '')));
+        if (req.query.error) throw new Error('A autorização do Google Drive foi cancelada.');
+        const tokens = await exchangeGoogleDriveCode(googleDriveClient(), String(req.query.code || ''));
+        if (!tokens.refresh_token) throw new Error('O Google não forneceu autorização permanente. Tente conectar novamente.');
+        const current = await getIntegrationConfig(slug, 'googledrive').catch(() => null) || {};
+        await upsertStoreRecord(slug, 'integrations', protectIntegrationRecord(slug, {
+            ...current,
+            id: 'googledrive',
+            connected: true,
+            refreshToken: tokens.refresh_token,
+            frequency: current.frequency || 'daily',
+            hour: current.hour || '03:00',
+            weekday: Number(current.weekday ?? 0),
+            connectedAt: new Date().toISOString(),
+        }, current));
+        if (returnTo === 'agenda' || returnTo === 'integracoes') {
+            const currentCalendar = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null) || {};
+            await upsertStoreRecord(slug, 'integrations', {
+                ...currentCalendar,
+                id: 'googlecalendar', enabled: true,
+                calendarId: currentCalendar.calendarId || 'primary',
+                timeZone: currentCalendar.timeZone || 'America/Manaus',
+                connectedAt: new Date().toISOString(),
+            });
+            scheduleCalendarSync(slug);
+        }
+        return res.redirect(`/admin/${returnTo}?google=connected`);
+    } catch (error: any) {
+        const message = encodeURIComponent(error?.message || 'Falha ao conectar ao Google Drive.');
+        return res.redirect(`/admin/${returnTo}?google=error&message=${message}`);
+    }
+});
+
+app.post('/api/store/:slug/backup/google/settings', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const current = await getIntegrationConfig(slug, 'googledrive');
+        if (!current?.refreshToken) return res.status(400).json({ message: 'Conecte o Google Drive primeiro.' });
+        const frequency = req.body?.frequency === 'weekly' ? 'weekly' : 'daily';
+        const hour = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.body?.hour || '')) ? String(req.body.hour) : '03:00';
+        const weekday = Math.min(6, Math.max(0, Number(req.body?.weekday || 0)));
+        const saved = protectIntegrationRecord(slug, {
+            ...current, id: 'googledrive', enabled: Boolean(req.body?.enabled), frequency, hour, weekday,
+        }, current);
+        await upsertStoreRecord(slug, 'integrations', saved);
+        await writeAudit(slug, (req as any).auth, 'UPDATE', 'backup', 'googledrive');
+        return res.json({ enabled: saved.enabled, frequency, hour, weekday });
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/backup/google/run', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        const result = await performGoogleDriveBackup(slug);
+        await writeAudit(slug, (req as any).auth, 'BACKUP', 'googledrive', result.fileId);
+        return res.json(result);
+    } catch (error) { return next(error); }
+});
+
+app.post('/api/store/:slug/backup/google/disconnect', requireStoreAdmin, async (req, res, next) => {
+    try {
+        const slug = cleanSlug(req.params.slug);
+        await deleteStoreRecord(slug, 'integrations', 'googledrive');
+        const calendar = await getIntegrationConfig(slug, 'googlecalendar').catch(() => null);
+        if (calendar) await upsertStoreRecord(slug, 'integrations', {
+            ...calendar, id: 'googlecalendar', enabled: false, disconnectedAt: new Date().toISOString(),
+        });
+        await writeAudit(slug, (req as any).auth, 'DISCONNECT', 'backup', 'googledrive');
+        return res.json({ disconnected: true });
     } catch (error) { return next(error); }
 });
 
@@ -1194,6 +2267,10 @@ app.get('/api/store/:slug/audit_log', requireStoreAdmin, async (req, res, next) 
 
 
 app.use('/assets', express.static(path.join(distPath, 'assets'), { immutable: true, maxAge: '1y' }));
+app.get('/sw.js', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.sendFile(path.join(distPath, 'sw.js'));
+});
 app.use(express.static(distPath, { maxAge: '1h', index: false }));
 
 app.use((error: any, _req: any, res: any, _next: any) => {
@@ -1207,6 +2284,15 @@ app.use((req, res, next) => {
     return res.sendFile(path.join(distPath, 'index.html'));
 });
 
-await initializeDatabases();
-await restoreWhatsAppSessions();
-app.listen(port, '0.0.0.0', () => console.log(`Feitosa Soluções disponível na porta ${port}`));
+initializationPromise = initializeDatabases().then(() => { databaseReady = true; });
+void initializationPromise.then(() => restoreWhatsAppSessions());
+void initializationPromise.then(() => startPaymentReminderScheduler());
+void initializationPromise.then(() => startAutomaticBackupScheduler());
+void initializationPromise.then(() => startAutomaticCalendarScheduler());
+void initializationPromise.catch((error) => {
+    console.error('Falha ao iniciar o servidor:', error);
+});
+const server = app.listen(port, '0.0.0.0', () => console.log(`Feitosa Soluções disponível na porta ${port}`));
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
+server.requestTimeout = 60_000;

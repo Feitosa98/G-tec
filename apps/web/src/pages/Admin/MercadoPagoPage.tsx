@@ -12,6 +12,7 @@ export default function MercadoPagoPage() {
     const [sandbox, setSandbox] = useState(true);
     const [saving, setSaving] = useState(false);
     const [configured, setConfigured] = useState(false);
+    const [enabled, setEnabled] = useState(true);
     const [webhookSecret, setWebhookSecret] = useState('');
     const [publicBaseUrl, setPublicBaseUrl] = useState('');
     const [webhookUrl, setWebhookUrl] = useState('');
@@ -45,6 +46,7 @@ export default function MercadoPagoPage() {
                     setAccessToken(mp.accessToken ? '••••••••••••••••' + mp.accessToken.slice(-6) : '');
                     setSandbox(mp.sandbox ?? true);
                     setConfigured(!!mp.accessToken);
+                    setEnabled(mp.enabled !== false);
                     setWebhookSecret(mp.webhookSecret ? '••••••••••••••••' + mp.webhookSecret.slice(-6) : '');
                     setPublicBaseUrl(mp.publicBaseUrl || '');
                     setWebhookUrl(mp.webhookUrl || '');
@@ -100,7 +102,7 @@ export default function MercadoPagoPage() {
         try {
             const res = await fetch(`/api/store/${tenant?.storeSlug}/mercadopago/config`, {
                 method: 'POST', headers,
-                body: JSON.stringify({ accessToken, webhookSecret, publicBaseUrl, sandbox }),
+                body: JSON.stringify({ accessToken, webhookSecret, publicBaseUrl, sandbox, enabled }),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -146,18 +148,18 @@ export default function MercadoPagoPage() {
     return (
         <div className="space-y-8">
             {/* Status Banner */}
-            <div className={`flex items-center gap-4 p-5 rounded-2xl border ${configured ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-amber-500/5 border-amber-500/20'}`}>
+            <div className={`flex items-center gap-4 p-5 rounded-2xl border ${configured && enabled ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-amber-500/5 border-amber-500/20'}`}>
                 {configured
-                    ? <CheckCircle className="w-8 h-8 text-emerald-400 shrink-0" />
+                    && enabled ? <CheckCircle className="w-8 h-8 text-emerald-400 shrink-0" />
                     : <AlertCircle className="w-8 h-8 text-amber-400 shrink-0" />}
                 <div>
-                    <p className={`font-semibold ${configured ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {configured ? '✅ Mercado Pago Conectado' : '⚠️ Não configurado'}
+                    <p className={`font-semibold ${configured && enabled ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {configured && enabled ? '✅ Mercado Pago Conectado' : configured ? '⏸️ Mercado Pago desabilitado' : '⚠️ Não configurado'}
                     </p>
                     <p className="text-slate-400 text-sm">
-                        {configured
+                        {configured && enabled
                             ? 'Você pode gerar links de pagamento nas telas de OS e Cobranças'
-                            : 'Configure seu Access Token para habilitar links de pagamento'}
+                            : configured ? 'As credenciais foram preservadas, mas nenhuma cobrança será gerada.' : 'Configure seu Access Token para habilitar links de pagamento'}
                     </p>
                 </div>
             </div>
@@ -180,6 +182,15 @@ export default function MercadoPagoPage() {
 
             {/* Config Card */}
             <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 space-y-5">
+                <div className="flex items-center justify-between gap-4 p-4 bg-slate-800/40 rounded-xl border border-slate-700/50">
+                    <div>
+                        <p className="text-sm font-semibold text-slate-200">Habilitar integração</p>
+                        <p className="text-xs text-slate-500">Ao desabilitar, as credenciais ficam guardadas e o sistema não gera PIX.</p>
+                    </div>
+                    <button type="button" onClick={() => setEnabled(!enabled)} className={`relative w-11 h-6 rounded-full transition-colors ${enabled ? 'bg-emerald-500' : 'bg-slate-600'}`}>
+                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : ''}`} />
+                    </button>
+                </div>
                 <div className="flex items-center gap-3 mb-2">
                     <div className="p-2 bg-blue-500/10 rounded-xl border border-blue-500/20">
                         <Key className="w-5 h-5 text-blue-400" />
@@ -293,7 +304,7 @@ export default function MercadoPagoPage() {
             </div>
 
             {/* Test generator */}
-            {configured && (
+            {configured && enabled && (
                 <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 space-y-4">
                     <h3 className="font-semibold text-slate-200 flex items-center gap-2">
                         <CreditCard className="w-5 h-5 text-slate-400" /> Testar Geração de Link

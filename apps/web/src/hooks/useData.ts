@@ -37,6 +37,7 @@ export const useData = () => {
     const { mutateAsync: addSaleMut } = useAddSale();
     const { mutateAsync: updateSaleMut } = useUpdateSale();
     const { mutateAsync: addExpenseMut } = useAddReceivable();
+    const { mutateAsync: updateExpenseMut } = useUpdateReceivable();
     const { mutateAsync: removeExpenseMut } = useDeleteReceivable();
 
     const { mutateAsync: addSubMut } = useAddSubscription();
@@ -59,14 +60,30 @@ export const useData = () => {
             .reduce((acc: number, entry: any) => acc + (Number(entry.value ?? entry.amount) || 0), 0);
         const totalExpenses = (expensesData || []).filter((entry: any) => entry.type !== 'inflow')
             .reduce((acc: number, entry: any) => acc + (Number(entry.value ?? entry.amount) || 0), 0);
-        const totalCOGS = (salesData || []).reduce((total: number, sale: any) => total + (sale.items || []).reduce(
-            (subtotal: number, item: any) => subtotal + (Number(item.cost ?? item.costPrice ?? item.purchasePrice) || 0) * (Number(item.quantity) || 1), 0
-        ), 0);
+        const cashReceivedFromSales = (salesData || []).reduce((total: number, sale: any) => {
+            if (Number.isFinite(Number(sale.paidTotal))) return total + Number(sale.paidTotal);
+            if (sale.paymentStatus === 'Pago' || sale.status === 'Pago') return total + (Number(sale.total) || 0);
+            return total;
+        }, 0);
+        const totalCOGS = (salesData || []).reduce((total: number, sale: any) => {
+            const calculatedItemCost = (sale.items || []).reduce(
+                (subtotal: number, item: any) => subtotal + (Number(item.cost ?? item.costPrice ?? item.purchasePrice) || 0) * (Number(item.quantity ?? item.qty) || 1), 0
+            );
+            return total + (Number.isFinite(Number(sale.totalCost)) ? Number(sale.totalCost) : calculatedItemCost);
+        }, 0);
         const totalRevenue = totalSales + extraRevenue;
         const grossProfit = totalRevenue - totalCOGS;
         const netProfit = grossProfit - totalExpenses;
-        const pendingReceivables = (expensesData || []).filter((e: any) => e.type === 'receivable' && e.status === 'pending')
-            .reduce((acc: number, r: any) => acc + (Number(r.amount) || 0), 0);
+        const pendingReceivables = (salesData || []).reduce((total: number, sale: any) => {
+            const installments = sale.installments || [];
+            if (installments.length) return total + installments
+                .filter((installment: any) => installment.status !== 'Pago' && !installment.paid)
+                .reduce((subtotal: number, installment: any) => subtotal + (Number(installment.value ?? installment.amount) || 0), 0);
+            return total + Math.max(0, Number(sale.balanceDue ?? 0) || 0);
+        }, 0);
+        const pendingPayables = (expensesData || []).filter((entry: any) => entry.type !== 'inflow' && entry.status === 'Pendente')
+            .reduce((total: number, entry: any) => total + (Number(entry.value ?? entry.amount) || 0), 0);
+        const cashReceived = cashReceivedFromSales + extraRevenue;
 
         return {
             totalRevenue,
@@ -77,7 +94,9 @@ export const useData = () => {
             revenue: totalRevenue,
             expenses: totalExpenses,
             balance: netProfit,
-            pending: pendingReceivables
+            pending: pendingReceivables,
+            cashReceived,
+            pendingPayables,
         };
     };
 
@@ -109,6 +128,7 @@ export const useData = () => {
         // Sales and expenses
         registerSale: async (sale: any, _source?: string) => { await addSaleMut(sale); return true; },
         addExpense: async (e: any) => { await addExpenseMut(e); return true; },
+        updateExpense: async (id: string, e: any) => { await updateExpenseMut({ id, ...e }); return true; },
         removeExpense: async (id: string) => { await removeExpenseMut(id); return true; },
         getFinancialSummary,
 
@@ -124,10 +144,30 @@ export const useData = () => {
         markInstallmentPaid: async (saleId: string, installmentId: string, method?: string, finalValue?: number, discount?: number) => {
             const sale = salesData?.find((item: any) => item.id === saleId);
             if (sale) {
+                const paidAt = new Date().toISOString();
                 const newInstallments = (sale.installments || []).map((installment: any) => installment.id === installmentId
-                    ? { ...installment, status: 'Pago', paid: true, paidAt: new Date().toISOString(), paymentMethod: method, paidValue: finalValue, discount }
+                    ? { ...installment, status: 'Pago', paid: true, paidAt, paymentMethod: method, paidValue: finalValue, discount }
                     : installment);
-                await updateSaleMut({ ...sale, id: saleId, installments: newInstallments });
+                const allPaid = newInstallments.length > 0 && newInstallments.every((installment: any) => installment.status === 'Pago' || installment.paid);
+                const paidTotal = newInstallments.filter((installment: any) => installment.status === 'Pago' || installment.paid)
+                    .reduce((sum: number, installment: any) => sum + Number(installment.paidValue ?? installment.value ?? installment.amount ?? 0), 0);
+                await updateSaleMut({ ...sale, id: saleId, installments: newInstallments, paidTotal, balanceDue: Math.max(0, Number(sale.total || 0) - paidTotal), paymentStatus: allPaid ? 'Pago' : paidTotal > 0 ? 'Parcial' : 'Pendente', status: allPaid ? 'Pago' : sale.status });
+
+                if (sale.osReference) {
+                    const order = serviceOrdersData?.find((item: any) => item.id === sale.osReference);
+                    if (order) {
+                        const existingPayments = order.payments || [];
+                        const installment = newInstallments.find((item: any) => item.id === installmentId);
+                        const payments = existingPayments.some((payment: any) => payment.installmentId === installmentId)
+                            ? existingPayments
+                            : [...existingPayments, { id: crypto.randomUUID(), installmentId, amount: Number(finalValue ?? installment?.value ?? installment?.amount ?? 0), method: method || 'Dinheiro', note: 'Recebimento de parcela', paidAt }];
+                        await updateOrderMut({
+                            ...order, id: order.id, installments: newInstallments, payments, paidTotal,
+                            balanceDue: Math.max(0, Number(order.totalValue || sale.total || 0) - paidTotal),
+                            paymentStatus: allPaid ? 'Pago' : 'Parcial', status: allPaid ? 'Paga' : order.status,
+                        });
+                    }
+                }
                 return true;
             }
             return false;

@@ -1,16 +1,19 @@
 import nodemailer from 'nodemailer';
 
 
-export async function sendEmail(tenantDb: any, to: string, subject: string, html: string) {
-    const configDoc = await tenantDb.query.integrations.findFirst({
-        where: (integrations: any, { eq }: any) => eq(integrations.id, 'email')
-    });
+interface EmailAttachment {
+    filename: string;
+    content: string;
+    encoding: 'base64';
+    contentType: string;
+}
 
-    if (!configDoc || !configDoc.data || !configDoc.data.host) {
+export async function sendEmail(config: any, to: string, subject: string, html: string, attachments: EmailAttachment[] = []) {
+    if (!config?.host || !config?.user || !config?.pass) {
         throw new Error('E-mail integration not configured');
     }
 
-    const { host, port, user, pass, from } = configDoc.data;
+    const { host, port, user, pass, from } = config;
 
     const transporter = nodemailer.createTransport({
         host,
@@ -26,6 +29,7 @@ export async function sendEmail(tenantDb: any, to: string, subject: string, html
         from: from || user,
         to,
         subject,
-        html
+        html,
+        attachments,
     });
 }

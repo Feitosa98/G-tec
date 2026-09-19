@@ -6,7 +6,7 @@ const defaultTenant = {
     businessName: 'Feitosa Soluções em Informática',
     legalName: 'IAGO DA SILVA FEITOSA',
     shortName: 'Feitosa Soluções',
-    logoUrl: '/G-tec/logo.png', // Fallback, will be replaced by actual data
+    logoUrl: '/logo.png', // Fallback, será substituído pelos dados da empresa
     primaryColor: '#0052cc',
     accentColor: '#d4a024',
     backgroundColor: '#0a0e1a',

@@ -5,7 +5,9 @@
     "apps/*"
   ],
   "scripts": {
+    "start": "npm run start --workspace=@gtec/server",
     "build": "npm run build --workspace=@gtec/web && npm run build --workspace=@gtec/server",
+    "build:hostinger": "node -e \"const fs=require('fs'); for (const f of ['apps/web/dist/index.html','apps/server/dist/server/index.js']) { if (!fs.existsSync(f)) throw new Error('Arquivo ausente: '+f); } console.log('Artefatos prontos para implantacao.');\"",
     "lint": "npm run lint --workspace=@gtec/web",
     "typecheck": "npm run typecheck --workspace=@gtec/web && npm run build --workspace=@gtec/server",
     "test": "npm run test --workspace=@gtec/server",

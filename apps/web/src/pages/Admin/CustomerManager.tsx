@@ -1,18 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useData } from '../../hooks/useData';
 import { Plus, Trash2, Edit, Users, History, X, FileText, CheckCircle, Package } from 'lucide-react';
 import { format } from 'date-fns';
 import { showToast } from '../../utils/toast';
 import { formatBrazilianPhone } from '../../utils/phone';
 
+const emptyCustomerForm = {
+    name: '', email: '', phone: '', document: '', postalCode: '', street: '', addressNumber: '',
+    complement: '', neighborhood: '', city: '', state: '', address: ''
+};
+
+const onlyDigits = (value: string) => String(value || '').replace(/\D/g, '');
+const formatDocument = (value: string) => {
+    const digits = onlyDigits(value).slice(0, 14);
+    if (digits.length <= 11) return digits
+        .replace(/^(\d{3})(\d)/, '$1.$2').replace(/^(\d{3})\.(\d{3})(\d)/, '$1.$2.$3')
+        .replace(/\.(\d{3})(\d)/, '.$1-$2');
+    return digits.replace(/^(\d{2})(\d)/, '$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3')
+        .replace(/\.(\d{3})(\d)/, '.$1/$2').replace(/(\d{4})(\d)/, '$1-$2');
+};
+const formatPostalCode = (value: string) => onlyDigits(value).slice(0, 8).replace(/^(\d{5})(\d)/, '$1-$2');
+
 const CustomerManager = () => {
     const { tenant } = useData();
     const [customers, setCustomers] = useState([]);
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [editingCustomer, setEditingCustomer] = useState(null);
-    const [formData, setFormData] = useState({
-        name: '', email: '', phone: '', document: '', address: ''
-    });
+    const [formData, setFormData] = useState(emptyCustomerForm);
+    const [lookupStatus, setLookupStatus] = useState<'cnpj' | 'cep' | null>(null);
+    const lastCnpjLookup = useRef('');
+    const lastCepLookup = useRef('');
     const [historyCustomer, setHistoryCustomer] = useState(null);
     const { sales } = useData();
 
@@ -35,6 +52,58 @@ const CustomerManager = () => {
             fetchCustomers();
         }
     }, [tenant]);
+
+    useEffect(() => {
+        const cnpj = onlyDigits(formData.document);
+        if (!tenant?.storeSlug || cnpj.length !== 14 || cnpj === lastCnpjLookup.current) return;
+        const timer = window.setTimeout(async () => {
+            lastCnpjLookup.current = cnpj;
+            setLookupStatus('cnpj');
+            try {
+                const response = await fetch(`/api/store/${tenant.storeSlug}/lookup/cnpj/${cnpj}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'CNPJ não encontrado.');
+                setFormData(current => ({
+                    ...current,
+                    name: data.name || current.name,
+                    email: data.email || current.email,
+                    phone: data.phone ? formatBrazilianPhone(data.phone) : current.phone,
+                    postalCode: data.postalCode ? formatPostalCode(data.postalCode) : current.postalCode,
+                    street: data.street || current.street,
+                    addressNumber: data.addressNumber || current.addressNumber,
+                    complement: data.complement || current.complement,
+                    neighborhood: data.neighborhood || current.neighborhood,
+                    city: data.city || current.city,
+                    state: data.state || current.state,
+                }));
+                showToast.success('Dados do CNPJ preenchidos automaticamente.');
+            } catch (error: any) {
+                showToast.error(error.message || 'Não foi possível consultar o CNPJ.');
+            } finally { setLookupStatus(null); }
+        }, 450);
+        return () => window.clearTimeout(timer);
+    }, [formData.document, tenant?.storeSlug]);
+
+    useEffect(() => {
+        const cep = onlyDigits(formData.postalCode);
+        if (!tenant?.storeSlug || cep.length !== 8 || cep === lastCepLookup.current) return;
+        const timer = window.setTimeout(async () => {
+            lastCepLookup.current = cep;
+            setLookupStatus('cep');
+            try {
+                const response = await fetch(`/api/store/${tenant.storeSlug}/lookup/cep/${cep}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'CEP não encontrado.');
+                setFormData(current => ({ ...current, street: data.street || current.street,
+                    neighborhood: data.neighborhood || current.neighborhood, city: data.city || current.city,
+                    state: data.state || current.state }));
+                showToast.success('Endereço preenchido pelo CEP.');
+            } catch (error: any) {
+                showToast.error(error.message || 'Não foi possível consultar o CEP.');
+            } finally { setLookupStatus(null); }
+        }, 450);
+        return () => window.clearTimeout(timer);
+    }, [formData.postalCode, tenant?.storeSlug]);
 
     const fetchCustomers = async () => {
         try {
@@ -90,6 +159,9 @@ const CustomerManager = () => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
     };
 
+    const handleDocumentChange = (e) => setFormData({ ...formData, document: formatDocument(e.target.value) });
+    const handlePostalCodeChange = (e) => setFormData({ ...formData, postalCode: formatPostalCode(e.target.value) });
+
     const handlePhoneChange = (e) => {
         setFormData({ ...formData, phone: formatBrazilianPhone(e.target.value) });
     };
@@ -97,24 +169,36 @@ const CustomerManager = () => {
     const handleEdit = (customer) => {
         setEditingCustomer(customer);
         setFormData({
+            ...emptyCustomerForm,
             name: customer.name || '',
             email: customer.email || '',
             phone: formatBrazilianPhone(customer.phone),
             document: customer.document || '',
-            address: customer.address || ''
+            postalCode: customer.postalCode || '', street: customer.street || '', addressNumber: customer.addressNumber || '',
+            complement: customer.complement || '', neighborhood: customer.neighborhood || '', city: customer.city || '',
+            state: customer.state || '', address: customer.address || ''
         });
         setIsFormOpen(true);
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const address = [formData.street, formData.addressNumber, formData.complement, formData.neighborhood,
+            [formData.city, formData.state].filter(Boolean).join(' - '), formData.postalCode].filter(Boolean).join(', ');
         const customerData = {
             id: editingCustomer ? editingCustomer.id : crypto.randomUUID(),
             name: formData.name,
             email: formData.email,
             phone: formData.phone,
             document: formData.document,
-            address: formData.address,
+            postalCode: formData.postalCode,
+            street: formData.street,
+            addressNumber: formData.addressNumber,
+            complement: formData.complement,
+            neighborhood: formData.neighborhood,
+            city: formData.city,
+            state: formData.state,
+            address,
             createdAt: editingCustomer ? editingCustomer.createdAt : new Date().toISOString()
         };
 
@@ -123,7 +207,7 @@ const CustomerManager = () => {
             showToast.success(`Cliente ${editingCustomer ? 'atualizado' : 'cadastrado'} com sucesso!`);
             setIsFormOpen(false);
             setEditingCustomer(null);
-            setFormData({ name: '', email: '', phone: '', document: '', address: '' });
+            setFormData(emptyCustomerForm);
         }
     };
 
@@ -144,7 +228,7 @@ const CustomerManager = () => {
                 </div>
                 <button 
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-medium shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/35 transition-all duration-200 cursor-pointer active:scale-95" 
-                    onClick={() => { setIsFormOpen(!isFormOpen); setEditingCustomer(null); setFormData({ name: '', email: '', phone: '', document: '', address: '' }); }}
+                    onClick={() => { setIsFormOpen(!isFormOpen); setEditingCustomer(null); setFormData(emptyCustomerForm); lastCnpjLookup.current = ''; lastCepLookup.current = ''; }}
                 >
                     <Plus className="w-5 h-5" /> Novo Cliente
                 </button>
@@ -203,24 +287,48 @@ const CustomerManager = () => {
                             />
                         </div>
                         <div className="space-y-1.5">
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">CPF / CNPJ</label>
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">CPF / CNPJ {lookupStatus === 'cnpj' && <span className="normal-case text-indigo-400">· consultando...</span>}</label>
                             <input 
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/80 transition-all duration-200" 
                                 name="document" 
                                 placeholder="Apenas números ou formatado" 
                                 value={formData.document} 
-                                onChange={handleChange} 
+                                onChange={handleDocumentChange}
+                                inputMode="numeric"
+                                maxLength={18}
                             />
                         </div>
-                        <div className="space-y-1.5 md:col-span-2">
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Endereço Completo</label>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">CEP {lookupStatus === 'cep' && <span className="normal-case text-indigo-400">· consultando...</span>}</label>
                             <input 
                                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/80 transition-all duration-200" 
-                                name="address" 
-                                placeholder="Rua, Número, Bairro, Cidade" 
-                                value={formData.address} 
-                                onChange={handleChange} 
+                                name="postalCode" placeholder="00000-000" value={formData.postalCode}
+                                onChange={handlePostalCodeChange} inputMode="numeric" maxLength={9}
                             />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Rua / Logradouro</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="street" value={formData.street} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Número</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="addressNumber" value={formData.addressNumber} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Complemento</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="complement" value={formData.complement} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Bairro</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="neighborhood" value={formData.neighborhood} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Cidade</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="city" value={formData.city} onChange={handleChange} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Estado</label>
+                            <input className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500/50" name="state" value={formData.state} onChange={handleChange} maxLength={2} />
                         </div>
 
                         <div className="md:col-span-2 pt-2">
@@ -259,7 +367,7 @@ const CustomerManager = () => {
                                     </td>
                                 </tr>
                             ) : (
-                                customers.map(customer => (
+                                [...customers].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR', { sensitivity: 'base' })).map(customer => (
                                     <tr key={customer.id} className="hover:bg-slate-800/40 transition-colors duration-150">
                                         <td className="px-6 py-4 text-sm font-semibold text-white">{customer.name}</td>
                                         <td className="px-6 py-4 text-sm">

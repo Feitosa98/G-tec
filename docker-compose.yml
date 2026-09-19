@@ -1,15 +1,16 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: mysql:8.4
     restart: unless-stopped
     environment:
-      POSTGRES_USER: gtec
-      POSTGRES_PASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
-      POSTGRES_DB: gtec_control
+      MYSQL_USER: gtec
+      MYSQL_PASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
+      MYSQL_DATABASE: gtec
+      MYSQL_ROOT_PASSWORD: ${GTEC_DB_ROOT_PASSWORD:?Defina GTEC_DB_ROOT_PASSWORD}
     volumes:
-      - gtec_postgres_data:/var/lib/postgresql/data
+      - gtec_mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gtec -d gtec_control"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ugtec", "--password=${GTEC_DB_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -27,15 +28,16 @@ services:
         condition: service_healthy
     environment:
       PORT: 3000
-      PGHOST: db
-      PGPORT: 5432
-      PGUSER: gtec
-      PGPASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
-      PGDATABASE: gtec_control
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: gtec
+      DB_PASSWORD: ${GTEC_DB_PASSWORD:?Defina GTEC_DB_PASSWORD}
+      DB_NAME: gtec
       SAAS_ADMIN_USER: ${SAAS_ADMIN_USER:-gestor}
       SAAS_ADMIN_PASSWORD: ${SAAS_ADMIN_PASSWORD:?Defina SAAS_ADMIN_PASSWORD}
       SAAS_TOKEN_SECRET: ${SAAS_TOKEN_SECRET:?Defina SAAS_TOKEN_SECRET}
       NFSE_SECRET_KEY: ${NFSE_SECRET_KEY:-}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Defina DATA_ENCRYPTION_KEY}
       DEFAULT_STORE_ADMIN_PASSWORD: ${DEFAULT_STORE_ADMIN_PASSWORD:?Defina DEFAULT_STORE_ADMIN_PASSWORD}
     ports:
       - "${GTEC_PORT:-8080}:3000"
@@ -43,4 +45,4 @@ services:
       - no-new-privileges:true
 
 volumes:
-  gtec_postgres_data:
+  gtec_mysql_data:

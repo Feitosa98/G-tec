@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
 import { 
     Plus, Trash2, Edit, ClipboardList, Printer, CheckCircle, Search, 
-    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy, QrCode, ExternalLink, FileText, ShieldCheck, Eye
+    Wrench, ShoppingBag, X, Laptop, Tag, MessageCircle, CreditCard, Copy, QrCode, ExternalLink, FileText, ShieldCheck, Eye, Mail
 } from 'lucide-react';
 import { showToast } from '../../utils/toast';
 import { generateDanfsePDF, generateProfessionalPDF } from '../../utils/pdfGenerator';
 import { useNotify } from '../../hooks/useNotify';
 import { formatBrazilianPhone } from '../../utils/phone';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
+import { useQueryClient } from '@tanstack/react-query';
+import { storeQueryKey } from '../../utils/api';
 
 
 // Função para gerar o Payload PIX (Copia e Cola e QR Code)
@@ -78,6 +80,12 @@ const resolveOrderTotal = (order: any) => {
     return storedTotal > 0 || itemsTotal === 0 ? storedTotal : itemsTotal;
 };
 
+const serviceOrderNumber = (order: any) => Number(order?.orderNumber) > 0
+    ? String(Math.trunc(Number(order.orderNumber))).padStart(6, '0')
+    : String(order?.id || '').split('-')[0].slice(0, 8).toUpperCase();
+
+const serviceOrderReference = (order: any) => `#${serviceOrderNumber(order)}`;
+
 const defaultFlowTemplates = {
     chargeCreatedEnabled: true,
     paymentConfirmedEnabled: true,
@@ -92,10 +100,12 @@ const fillMessageTemplate = (template: string, values: Record<string, string>) =
     .reduce((message, [key, value]) => message.replaceAll(`{${key}}`, value), template);
 
 const ServiceOrdersManager = () => {
+    const queryClient = useQueryClient();
     const { tenant, showConfirm, showAlert, registerSale } = useData();
     const { notify } = useNotify();
     const { generatePixPayment, checkPixPaymentStatus, copyLinkToClipboard } = useMercadoPago();
     const [mpConfigured, setMpConfigured] = useState(false);
+    const [whatsappConnected, setWhatsappConnected] = useState(false);
     const [waTemplates, setWaTemplates] = useState(defaultFlowTemplates);
     const [pixPayments, setPixPayments] = useState<Record<string, any>>({});
     const [pixModal, setPixModal] = useState<{ order: any; payment: any } | null>(null);
@@ -109,13 +119,17 @@ const ServiceOrdersManager = () => {
             showToast.error('Cadastre o telefone do cliente antes de enviar a mensagem.');
             return;
         }
+        if (!whatsappConnected) {
+            showToast.info('WhatsApp desconectado. Conecte-o em Integrações antes de enviar.');
+            return;
+        }
 
-        const isCompleted = ['Concluída', 'Concluído', 'Entregue', 'Pago'].includes(order.status);
+            const isCompleted = ['Concluída', 'Concluído', 'Finalizada', 'Entregue', 'Paga', 'Pago'].includes(order.status);
         const message = fillMessageTemplate(
             isCompleted ? waTemplates.serviceCompleted : waTemplates.serviceOrderCreated,
             {
                 cliente: order.clientName || 'Cliente',
-                numero: String(order.id || '').slice(0, 8).toUpperCase(),
+                numero: serviceOrderNumber(order),
                 valor: resolveOrderTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
                 status: order.status || 'Aberta',
                 empresa: tenant?.businessName || '',
@@ -135,7 +149,7 @@ const ServiceOrdersManager = () => {
         }
         const result = await generatePixPayment({
             amount: resolveOrderTotal(order),
-            description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} #${String(order.id || '').slice(0, 8).toUpperCase()}`,
+            description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} ${serviceOrderReference(order)}`,
             payerEmail,
             payerName: order.clientName,
             externalReference: order.id,
@@ -149,7 +163,7 @@ const ServiceOrdersManager = () => {
     };
 
     const sendAutomaticCharge = async (order: any, payment: any) => {
-        if (!waTemplates.chargeCreatedEnabled || !order.clientPhone || !payment?.qrCode || !payment?.qrCodeBase64) return false;
+        if (!whatsappConnected || !waTemplates.chargeCreatedEnabled || !order.clientPhone || !payment?.qrCode || !payment?.qrCodeBase64) return false;
         const total = resolveOrderTotal(order);
         const rows = (order.items || []).map((item: any) => [
             item.type || '-',
@@ -163,7 +177,7 @@ const ServiceOrdersManager = () => {
         const pdf = await generateProfessionalPDF({
             tenant,
             title: 'RECIBO DE VENDA',
-            documentNumber: `#${String(order.id).slice(0, 8).toUpperCase()}`,
+            documentNumber: serviceOrderReference(order),
             customerInfo: [order.clientName, order.clientPhone, order.clientEmail || ''],
             documentInfo: [
                 { label: 'Data:', value: new Date(order.createdAt).toLocaleDateString('pt-BR') },
@@ -174,17 +188,17 @@ const ServiceOrdersManager = () => {
             totalLabel: 'TOTAL A PAGAR:',
             totalValue: total,
             pixPayload: payment.qrCode,
-            filename: `venda_${String(order.id).slice(0, 8).toUpperCase()}.pdf`,
+            filename: `venda_${serviceOrderNumber(order)}.pdf`,
             returnBase64: true,
             save: false,
         });
         if (!pdf?.base64) return false;
 
-        const title = `Cobrança da venda #${String(order.id).slice(0, 8).toUpperCase()}`;
+        const title = `Cobrança da venda ${serviceOrderReference(order)}`;
         const message = fillMessageTemplate(waTemplates.chargeCreated, {
             cliente: order.clientName || 'Cliente',
             titulo: title,
-            numero: String(order.id).slice(0, 8).toUpperCase(),
+            numero: serviceOrderNumber(order),
             valor: total.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
             pix: payment.qrCode,
             status: 'Aguardando pagamento',
@@ -209,12 +223,21 @@ const ServiceOrdersManager = () => {
     
     const [formData, setFormData] = useState({
         customerId: '', clientName: '', clientPhone: '', clientEmail: '',
-        device: '', devicePassword: '', issueDescription: '', technicalReport: '', warranty: '', 
-        status: 'Aberta', items: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
+        device: '', devicePassword: '', issueDescription: '', technicalReport: '', warranty: '90 dias',
+        status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
     });
 
     const [selectedItem, setSelectedItem] = useState('');
     const [itemQty, setItemQty] = useState(1);
+    const [itemPrice, setItemPrice] = useState('');
+    const [expenseDescription, setExpenseDescription] = useState('');
+    const [expenseAmount, setExpenseAmount] = useState('');
+    const [paymentAmount, setPaymentAmount] = useState('');
+    const [paymentMethod, setPaymentMethod] = useState('Dinheiro');
+    const [paymentNote, setPaymentNote] = useState('');
+    const [installmentCount, setInstallmentCount] = useState(2);
+    const [installmentIntervalDays, setInstallmentIntervalDays] = useState(30);
+    const [firstDueDate, setFirstDueDate] = useState('');
 
     useEffect(() => {
         const paymentId = pixModal?.payment?.paymentId;
@@ -254,13 +277,14 @@ const ServiceOrdersManager = () => {
 
     const fetchData = async () => {
         try {
-            const [ordersRes, custRes, prodRes, servRes, integrationsRes, nfseRes] = await Promise.all([
+            const [ordersRes, custRes, prodRes, servRes, integrationsRes, nfseRes, whatsappStatusRes] = await Promise.all([
                 fetch(`/api/store/${tenant.storeSlug}/service_orders`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/customers`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/products`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/services`, { headers }),
                 fetch(`/api/store/${tenant.storeSlug}/integrations`, { headers }),
-                fetch(`/api/store/${tenant.storeSlug}/nfse/config`, { headers })
+                fetch(`/api/store/${tenant.storeSlug}/nfse/config`, { headers }),
+                fetch(`/api/store/${tenant.storeSlug}/whatsapp/status?restore=0`, { headers })
             ]);
 
             if (ordersRes.ok) setOrders(await ordersRes.json());
@@ -270,14 +294,19 @@ const ServiceOrdersManager = () => {
             const servs = servRes.ok ? await servRes.json() : [];
             const integrations = integrationsRes.ok ? await integrationsRes.json() : [];
             const nfseConfig = nfseRes.ok ? await nfseRes.json() : null;
+            const whatsappStatus = whatsappStatusRes.ok ? await whatsappStatusRes.json() : null;
+            setWhatsappConnected(whatsappStatus?.status === 'connected');
             setNfseConfig(nfseConfig);
             setNfseHomologationEnabled(Boolean(nfseConfig?.enabled && nfseConfig?.certificateConfigured));
-            setMpConfigured(integrations.some((item: any) => item.id === 'mercadopago' && item.accessToken));
+            setMpConfigured(integrations.some((item: any) => item.id === 'mercadopago' && item.enabled !== false && item.accessToken));
             const savedTemplates = integrations.find((item: any) => item.id === 'whatsapp_templates');
             setWaTemplates({ ...defaultFlowTemplates, ...(savedTemplates || {}) });
             
             setInventory([
-                ...prods.map(p => ({ ...p, _type: 'Produto', _label: `[Produto] ${p.name} - R$ ${Number(p.price).toLocaleString('pt-BR', {minimumFractionDigits: 2})}` })),
+                ...prods.map(p => {
+                    const stock = Number(p.stock ?? p.quantity ?? 0);
+                    return { ...p, stock, _type: 'Produto', _label: `[Produto] ${p.name} - R$ ${Number(p.price).toLocaleString('pt-BR', {minimumFractionDigits: 2})} · estoque ${stock}` };
+                }),
                 ...servs.map(s => ({ ...s, _type: 'Serviço', _label: `[Serviço] ${s.name} - R$ ${Number(s.price).toLocaleString('pt-BR', {minimumFractionDigits: 2})}` }))
             ]);
             
@@ -294,15 +323,19 @@ const ServiceOrdersManager = () => {
                 body: JSON.stringify(orderData)
             });
             if (res.ok) {
+                const savedOrder = await res.json();
+                queryClient.invalidateQueries({ queryKey: storeQueryKey('products') });
+                queryClient.invalidateQueries({ queryKey: storeQueryKey('serviceOrders') });
                 fetchData();
-                return true;
+                return savedOrder;
             } else {
-                throw new Error('Falha ao salvar');
+                const errorBody = await res.json().catch(() => null);
+                throw new Error(errorBody?.message || `Falha ao salvar (código ${res.status})`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error(error);
-            showToast.error('Erro ao salvar O.S.');
-            return false;
+            showToast.error(`Erro ao salvar O.S.: ${error?.message || 'falha desconhecida'}`);
+            return null;
         }
     };
 
@@ -313,12 +346,21 @@ const ServiceOrdersManager = () => {
                     method: 'DELETE', headers
                 });
                 if (res.ok) {
+                    const result = await res.json().catch(() => ({}));
+                    queryClient.invalidateQueries({ queryKey: storeQueryKey('products') });
+                    queryClient.invalidateQueries({ queryKey: storeQueryKey('serviceOrders') });
+                    queryClient.invalidateQueries({ queryKey: storeQueryKey('sales') });
                     fetchData();
-                    showToast.success('O.S. excluída');
+                    showToast.success(result.returnedItems > 0
+                        ? `O.S. excluída e ${result.returnedItems} peça(s) devolvida(s) ao estoque.`
+                        : 'O.S. excluída.');
+                } else {
+                    const result = await res.json().catch(() => null);
+                    throw new Error(result?.message || 'Não foi possível excluir a O.S.');
                 }
-            } catch (error) {
+            } catch (error: any) {
                 console.error(error);
-                showAlert('Erro', 'Não foi possível excluir a O.S.');
+                showAlert('Erro', error?.message || 'Não foi possível excluir a O.S.');
             }
         });
     };
@@ -340,33 +382,118 @@ const ServiceOrdersManager = () => {
     const handleAddItem = (e) => {
         e.preventDefault();
         if (!selectedItem) return;
-        const item = inventory.find(i => i.id === selectedItem);
+        const item = inventory.find(i => String(i.id) === String(selectedItem));
         if (item) {
+            const orderPrice = Number(itemPrice);
+            if (!Number.isFinite(orderPrice) || orderPrice < 0) {
+                showToast.error('Informe um valor válido para o item nesta O.S.');
+                return;
+            }
+            const requestedQuantity = Math.max(1, Number(itemQty) || 1);
+            const availableStock = Number(item.stock ?? item.quantity ?? 0);
+            if (item._type === 'Produto' && availableStock < requestedQuantity) {
+                showToast.info(`Venda permitida. O estoque de ${item.name} ficará em ${availableStock - requestedQuantity}.`);
+            }
             setFormData({
                 ...formData,
                 items: [...formData.items, {
                     id: item.id,
                     type: item._type,
                     name: item.name,
-                    price: Number(item.price),
-                    qty: Number(itemQty)
-                }]
+                    catalogPrice: Number(item.price),
+                    cost: Number(item.cost ?? item.costPrice ?? item.purchasePrice ?? 0),
+                    price: orderPrice,
+                    qty: requestedQuantity,
+                    stockAtSelection: item._type === 'Produto' ? availableStock : undefined,
+                    allowsNegativeStock: item._type === 'Produto' && availableStock < requestedQuantity
+                }],
+                manualTotal: ''
             });
             setSelectedItem('');
             setItemQty(1);
+            setItemPrice('');
         }
+    };
+
+    const handleSelectedItemChange = (itemId) => {
+        setSelectedItem(itemId);
+        const item = inventory.find(candidate => String(candidate.id) === String(itemId));
+        setItemPrice(item ? String(Number(item.price) || 0) : '');
+    };
+
+    const handleOrderItemPriceChange = (index, value) => {
+        const price = Math.max(0, Number(value) || 0);
+        const items = formData.items.map((item, itemIndex) => itemIndex === index ? { ...item, price } : item);
+        setFormData({ ...formData, items, manualTotal: '' });
     };
 
     const handleRemoveItem = (index) => {
         const newItems = [...formData.items];
         newItems.splice(index, 1);
-        setFormData({ ...formData, items: newItems });
+        setFormData({ ...formData, items: newItems, manualTotal: '' });
     };
 
     const calculatedTotal = calculateItemsTotal(formData.items);
     const manualTotalValue = Number(formData.manualTotal);
     const hasValidManualTotal = formData.manualTotal !== '' && Number.isFinite(manualTotalValue) && manualTotalValue > 0;
     const finalTotal = hasValidManualTotal ? manualTotalValue : calculatedTotal;
+    const itemCostTotal = formData.items.reduce((total, item) => total + (Number(item.cost ?? item.costPrice ?? 0) || 0) * (Number(item.qty) || 1), 0);
+    const orderExpenseTotal = formData.expenses.reduce((total, expense) => total + (Number(expense.amount) || 0), 0);
+    const totalCost = itemCostTotal + orderExpenseTotal;
+    const netProfit = finalTotal - totalCost;
+    const paidTotal = formData.payments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+    const balanceDue = Math.max(0, finalTotal - paidTotal);
+
+    const handleAddExpense = () => {
+        const amount = Number(String(expenseAmount).replace(',', '.'));
+        if (!expenseDescription.trim() || !Number.isFinite(amount) || amount <= 0) {
+            showToast.error('Informe a descrição e o valor da despesa.');
+            return;
+        }
+        setFormData({ ...formData, expenses: [...formData.expenses, { id: crypto.randomUUID(), description: expenseDescription.trim(), amount }] });
+        setExpenseDescription('');
+        setExpenseAmount('');
+    };
+
+    const handleAddPayment = () => {
+        const amount = Number(String(paymentAmount).replace(',', '.'));
+        if (!Number.isFinite(amount) || amount <= 0) {
+            showToast.error('Informe um valor de pagamento válido.');
+            return;
+        }
+        const payments = [...formData.payments, { id: crypto.randomUUID(), amount, method: paymentMethod, note: paymentNote.trim(), paidAt: new Date().toISOString() }];
+        const nextPaidTotal = payments.reduce((total, payment) => total + Number(payment.amount || 0), 0);
+        setFormData({ ...formData, payments, paymentStatus: finalTotal > 0 && nextPaidTotal >= finalTotal ? 'Pago' : 'Parcial' });
+        setPaymentAmount('');
+        setPaymentNote('');
+    };
+
+    const handleGenerateInstallments = () => {
+        const count = Math.max(1, Math.min(60, Number(installmentCount) || 1));
+        const interval = Math.max(1, Math.min(365, Number(installmentIntervalDays) || 30));
+        if (finalTotal <= 0) {
+            showToast.error('Informe os itens ou o valor final antes de gerar as parcelas.');
+            return;
+        }
+        const baseDate = firstDueDate
+            ? new Date(`${firstDueDate}T12:00:00`)
+            : new Date(Date.now() + interval * 24 * 60 * 60 * 1000);
+        const baseAmount = Math.floor((finalTotal / count) * 100) / 100;
+        const installments = Array.from({ length: count }, (_, index) => {
+            const dueDate = new Date(baseDate);
+            dueDate.setDate(baseDate.getDate() + index * interval);
+            const amount = index === count - 1
+                ? Number((finalTotal - baseAmount * (count - 1)).toFixed(2))
+                : baseAmount;
+            return {
+                id: crypto.randomUUID(), number: index + 1, installmentNumber: index + 1,
+                amount, value: amount, dueDate: dueDate.toISOString().slice(0, 10),
+                status: 'Pendente', paid: false,
+            };
+        });
+        setFormData({ ...formData, installments, paymentStatus: 'Pendente' });
+        showToast.success(`${count} parcela(s) calculada(s).`);
+    };
 
     const handleManualTotalChange = (e) => {
         let value = e.target.value.replace(/\D/g, '');
@@ -384,6 +511,7 @@ const ServiceOrdersManager = () => {
 
     const handleEdit = (order) => {
         setEditingOrder(order);
+        if ((order.installments || []).length > 0) setPaymentMethod('A prazo');
         setFormData({
             customerId: order.customerId || '',
             clientName: order.clientName || '',
@@ -393,9 +521,13 @@ const ServiceOrdersManager = () => {
             devicePassword: order.devicePassword || '',
             issueDescription: order.issueDescription || '',
             technicalReport: order.technicalReport || '',
-            warranty: order.warranty || '',
+            warranty: order.warranty || '90 dias',
             status: order.status || 'Aberta',
+            paymentStatus: order.paymentStatus || (order.status === 'Pago' ? 'Pago' : 'Pendente'),
             items: order.items || [],
+            expenses: order.expenses || [],
+            payments: order.payments || [],
+            installments: order.installments || [],
             manualTotal: Number(order.manualTotal) > 0 ? String(order.manualTotal) : (order.items && order.items.length > 0 ? '' : String(order.totalValue || '')),
             orderType: order.orderType || 'Manutenção',
             financeSynced: order.financeSynced || false
@@ -406,28 +538,17 @@ const ServiceOrdersManager = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         
-        let newFinanceSynced = formData.financeSynced;
-        if (!newFinanceSynced && ['Aprovada', 'Concluída', 'Entregue'].includes(formData.status)) {
-            const dueDate = new Date();
-            // Send to Receivables
-            const saleData = {
-                customerName: formData.clientName,
-                userEmail: formData.clientName, // Store clientName as fallback
-                total: finalTotal,
-                paymentTerms: {
-                    type: 'terms',
-                    installments: 1,
-                    firstDueDate: dueDate.toISOString().substring(0, 10)
-                },
-                items: formData.items,
-                status: 'Confirmado',
-                osReference: editingOrder ? editingOrder.id : null
-            };
-            registerSale(saleData, 'Faturamento de O.S.');
-            newFinanceSynced = true;
-        }
-
-        const orderData = {
+        const forcePaid = ['Paga', 'Pago'].includes(formData.status) || formData.paymentStatus === 'Pago';
+        const resolvedPayments = forcePaid && paidTotal < finalTotal
+            ? [...formData.payments, { id: crypto.randomUUID(), amount: Math.max(0, finalTotal - paidTotal), method: paymentMethod === 'A prazo' ? 'Baixa manual' : paymentMethod, note: paymentNote.trim() || 'Baixa pelo status da O.S.', paidAt: new Date().toISOString() }]
+            : formData.payments;
+        const resolvedPaidTotal = forcePaid ? finalTotal : resolvedPayments.reduce((total, payment) => total + Number(payment.amount || 0), 0);
+        const resolvedPaymentStatus = forcePaid || (finalTotal > 0 && resolvedPaidTotal >= finalTotal) ? 'Pago' : resolvedPaidTotal > 0 ? 'Parcial' : formData.paymentStatus;
+        const resolvedStatus = resolvedPaymentStatus === 'Pago' ? 'Paga' : formData.status;
+        const resolvedInstallments = (formData.installments || []).map(installment => forcePaid ? {
+            ...installment, status: 'Pago', paid: true, paidAt: installment.paidAt || new Date().toISOString(), paymentMethod: installment.paymentMethod || paymentMethod,
+        } : installment);
+        let orderData = {
             id: editingOrder ? editingOrder.id : crypto.randomUUID(),
             customerId: formData.customerId,
             clientName: formData.clientName,
@@ -438,23 +559,61 @@ const ServiceOrdersManager = () => {
             issueDescription: formData.issueDescription,
             technicalReport: formData.technicalReport,
             warranty: formData.warranty,
-            status: formData.status,
+            status: resolvedStatus,
+            paymentStatus: resolvedPaymentStatus,
             items: formData.items,
+            expenses: formData.expenses,
+            payments: resolvedPayments,
+            installments: resolvedInstallments,
             manualTotal: hasValidManualTotal ? manualTotalValue : undefined,
             totalValue: finalTotal,
+            itemCostTotal,
+            expenseTotal: orderExpenseTotal,
+            totalCost,
+            netProfit,
+            paidTotal: resolvedPaidTotal,
+            balanceDue: Math.max(0, finalTotal - resolvedPaidTotal),
             orderType: formData.orderType,
-            financeSynced: newFinanceSynced,
+            financeSynced: true,
             createdAt: editingOrder ? editingOrder.createdAt : new Date().toISOString()
         };
 
-        const success = await saveOrder(orderData);
-        if (success) {
+        const savedOrder = await saveOrder(orderData);
+        if (savedOrder) {
+            orderData = { ...orderData, ...savedOrder };
+            try {
+                await registerSale({
+                    id: `os-${orderData.id}`,
+                    type: 'sale',
+                    source: 'service_order',
+                    osReference: orderData.id,
+                    customerId: orderData.customerId,
+                    customerName: orderData.clientName,
+                    userEmail: orderData.clientEmail || orderData.clientName,
+                    customerEmail: orderData.clientEmail || '',
+                    customerPhone: orderData.clientPhone || '',
+                    date: orderData.createdAt,
+                    total: orderData.totalValue,
+                    totalCost: orderData.totalCost,
+                    items: orderData.items.map(item => ({ ...item, quantity: Number(item.qty) || 1 })),
+                    expenses: orderData.expenses,
+                    payments: orderData.payments,
+                    installments: orderData.installments,
+                    paidTotal: orderData.paidTotal,
+                    balanceDue: orderData.balanceDue,
+                    paymentStatus: orderData.paymentStatus,
+                    status: orderData.status,
+                }, 'Faturamento de O.S.');
+            } catch (financeError) {
+                console.error(financeError);
+                showToast.info('O.S. salva, mas o financeiro não sincronizou. Tente salvar novamente.');
+            }
             showToast.success(`Ordem de Serviço ${editingOrder ? 'atualizada' : 'gerada'} com sucesso!`);
 
             if (!editingOrder && orderData.orderType === 'Venda Direta' && mpConfigured) {
                 const payment = await generatePixPayment({
                     amount: Number(orderData.totalValue) || 0,
-                    description: `Venda #${String(orderData.id).slice(0, 8).toUpperCase()}`,
+                    description: `Venda ${serviceOrderReference(orderData)}`,
                     payerEmail: orderData.clientEmail,
                     payerName: orderData.clientName,
                     externalReference: orderData.id,
@@ -476,10 +635,10 @@ const ServiceOrdersManager = () => {
                 }
             }
 
-            if (!editingOrder && orderData.orderType !== 'Venda Direta' && orderData.clientPhone && waTemplates.serviceOrderCreatedEnabled) {
+            if (!editingOrder && orderData.orderType !== 'Venda Direta' && orderData.clientPhone && waTemplates.serviceOrderCreatedEnabled && whatsappConnected) {
                 const message = fillMessageTemplate(waTemplates.serviceOrderCreated, {
                     cliente: orderData.clientName || 'Cliente',
-                    numero: String(orderData.id).slice(0, 8).toUpperCase(),
+                    numero: serviceOrderNumber(orderData),
                     valor: Number(orderData.totalValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
                     status: orderData.status,
                     empresa: tenant?.businessName || '',
@@ -487,13 +646,15 @@ const ServiceOrdersManager = () => {
                     pix: '',
                 });
                 await notify({ channel: 'whatsapp', to: orderData.clientPhone, message });
+            } else if (!editingOrder && orderData.orderType !== 'Venda Direta' && orderData.clientPhone && waTemplates.serviceOrderCreatedEnabled) {
+                showToast.info('O.S. salva. WhatsApp desconectado; a mensagem automática não foi enviada.');
             }
 
             // 🔔 Notificação automática via WhatsApp ao concluir/entregar
-            if (orderData.orderType !== 'Venda Direta' && ['Concluída', 'Concluído', 'Entregue'].includes(orderData.status) && orderData.clientPhone && waTemplates.serviceCompletedEnabled) {
+            if (orderData.orderType !== 'Venda Direta' && ['Concluída', 'Concluído', 'Finalizada', 'Entregue', 'Paga', 'Pago'].includes(orderData.status) && orderData.clientPhone && waTemplates.serviceCompletedEnabled && whatsappConnected) {
                 const msg = fillMessageTemplate(waTemplates.serviceCompleted, {
                     cliente: orderData.clientName || 'Cliente',
-                    numero: String(orderData.id || '').slice(0, 8).toUpperCase(),
+                    numero: serviceOrderNumber(orderData),
                     valor: Number(orderData.totalValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
                     status: orderData.status,
                     empresa: tenant?.businessName || '',
@@ -501,6 +662,13 @@ const ServiceOrdersManager = () => {
                     pix: '',
                 });
                 await notify({ channel: 'whatsapp', to: orderData.clientPhone, message: msg });
+            }
+
+            const becameCompleted = ['Concluída', 'Concluído', 'Finalizada', 'Entregue', 'Paga', 'Pago'].includes(orderData.status)
+                && editingOrder?.status !== orderData.status;
+            if (orderData.clientEmail && (!editingOrder || becameCompleted)) {
+                const emailSent = await sendOrderEmail(orderData, true);
+                if (!emailSent) showToast.info('O.S. salva, mas o e-mail automático não foi enviado. Confira a integração de e-mail.');
             }
 
             setIsFormOpen(false);
@@ -512,10 +680,19 @@ const ServiceOrdersManager = () => {
     const resetForm = () => {
         setFormData({
             customerId: '', clientName: '', clientPhone: '', clientEmail: '', device: '', devicePassword: '',
-            issueDescription: '', technicalReport: '', warranty: '', status: 'Aberta', items: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
+            issueDescription: '', technicalReport: '', warranty: '90 dias', status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
         });
         setSelectedItem('');
         setItemQty(1);
+        setItemPrice('');
+        setExpenseDescription('');
+        setExpenseAmount('');
+        setPaymentAmount('');
+        setPaymentMethod('Dinheiro');
+        setPaymentNote('');
+        setInstallmentCount(2);
+        setInstallmentIntervalDays(30);
+        setFirstDueDate('');
     };
 
     
@@ -534,7 +711,7 @@ const ServiceOrdersManager = () => {
                 }
                 const result = await generatePixPayment({
                     amount: payableTotal,
-                    description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} #${String(order.id || '').slice(0, 8).toUpperCase()}`,
+                    description: `${order.orderType === 'Venda Direta' ? 'Venda' : 'O.S.'} ${serviceOrderReference(order)}`,
                     payerEmail,
                     payerName: order.clientName,
                     externalReference: order.id,
@@ -545,14 +722,18 @@ const ServiceOrdersManager = () => {
                 mercadoPagoPix = result.qrCode;
                 setPixPayments(prev => ({ ...prev, [order.id]: payment }));
             }
-            const pixPayload = mpConfigured
+            const pixPayload = order.paymentStatus === 'Pago'
+                ? null
+                : mpConfigured
                 ? (mercadoPagoPix || null)
                 : generatePixPayload(tenant.pixKey, tenant.pixName, tenant.city || 'Manaus', payableTotal, txid);
 
             const isVenda = order.orderType === 'Venda Direta';
-            const termsText = !isVenda && order.paymentStatus !== 'Pago' && ['Aprovada', 'Concluída', 'Entregue'].includes(order.status)
-                ? 'TERMO DE CONFISSÃO DE DÍVIDA: O atraso no pagamento sujeitará o cliente ao pagamento de multa moratória fixa de 6% (seis por cento) sobre o valor devido, juros moratórios de 3% (três por cento) ao mês cobrados pro rata die, suspensão da prestação dos serviços após 15 (quinze) dias de atraso e encaminhamento do débito a Cartório de Protesto.'
+            const termsText = !isVenda
+                ? `Garantia: ${order.warranty || '90 dias'}, contada da retirada, válida para o serviço e as peças substituídas. Não cobre mau uso, oxidação, quedas, líquidos, surtos elétricos ou violação do lacre. Equipamentos não retirados em até 90 dias após o aviso poderão receber destinação adequada.`
                 : '';
+            const paidAmount = Number(order.paidTotal) || (order.payments || []).reduce((total, payment) => total + Number(payment.amount || 0), 0);
+            const openBalance = Math.max(0, payableTotal - paidAmount);
 
             const itemRows = (order.items || []).map(item => [
                 item.type || '-',
@@ -585,11 +766,12 @@ const ServiceOrdersManager = () => {
 
             const success = await generateProfessionalPDF({
                 tenant,
-                title: isVenda ? 'RECIBO DE VENDA' : 'ORDEM DE SERVIÇO',
-                documentNumber: `#${order.id.split('-')[0].toUpperCase()}`,
+                title: isVenda ? 'RECIBO DE VENDA — VIA DO CLIENTE' : 'ORDEM DE SERVIÇO — VIA DO CLIENTE',
+                documentNumber: serviceOrderReference(order),
                 customerInfo: [
                     order.clientName,
-                    formatBrazilianPhone(order.clientPhone) || 'Sem telefone'
+                    formatBrazilianPhone(order.clientPhone) || 'Sem telefone',
+                    order.clientEmail || 'Sem e-mail'
                 ],
                 documentInfo,
                 tableColumns: ['Tipo', 'Item', 'Qtd', 'V. Unit', 'Total'],
@@ -598,7 +780,16 @@ const ServiceOrdersManager = () => {
                 totalValue: payableTotal,
                 terms: termsText,
                 pixPayload: pixPayload,
-                filename: `OS_${order.id.substring(0,6).toUpperCase()}.pdf`
+                premiumStyle: true,
+                compactStyle: true,
+                summaryRows: [
+                    { label: 'TOTAL PAGO', value: `R$ ${paidAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, color: [36, 65, 180] },
+                    { label: 'SALDO EM ABERTO', value: `R$ ${openBalance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, color: openBalance > 0 ? [217, 119, 6] : [22, 163, 74] },
+                    { label: 'SITUAÇÃO', value: order.paymentStatus || (openBalance === 0 ? 'PAGO' : 'PENDENTE'), color: openBalance === 0 ? [22, 163, 74] : [217, 119, 6] },
+                ],
+                paymentRows: (order.payments || []).map(payment => [new Date(payment.paidAt).toLocaleString('pt-BR'), payment.method || '-', `R$ ${Number(payment.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, payment.note || '']),
+                signatureLabels: ['Assinatura do cliente', tenant.shortName || tenant.businessName || 'Empresa'],
+                filename: `OS_${serviceOrderNumber(order)}.pdf`
             });
 
             if (success) {
@@ -609,6 +800,81 @@ const ServiceOrdersManager = () => {
         } catch (err) {
             console.error(err);
             showAlert("Erro", "Erro ao gerar PDF da O.S.");
+        }
+    };
+
+    const sendOrderEmail = async (order: any, automatic = false) => {
+        const customer = customers.find((item: any) => item.id === order.customerId);
+        const email = order.clientEmail || customer?.email;
+        if (!email) {
+            if (!automatic) showToast.error('Cadastre o e-mail do cliente antes de enviar a O.S.');
+            return false;
+        }
+
+        try {
+            const total = resolveOrderTotal(order);
+            const isVenda = order.orderType === 'Venda Direta';
+            const paid = Number(order.paidTotal) || (order.payments || []).reduce(
+                (sum: number, payment: any) => sum + Number(payment.amount || 0), 0
+            );
+            const balance = Math.max(0, total - paid);
+            const rows = (order.items || []).map((item: any) => [
+                item.type || '-', item.name || '-', String(item.qty || 1),
+                `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                `R$ ${(Number(item.price || 0) * (Number(item.qty) || 1)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+            ]);
+            if (!rows.length) rows.push([
+                isVenda ? 'Venda' : 'Serviço', 'Valor informado manualmente', '1',
+                `R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                `R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+            ]);
+
+            const pdf = await generateProfessionalPDF({
+                tenant,
+                title: isVenda ? 'RECIBO DE VENDA' : 'ORDEM DE SERVIÇO',
+                documentNumber: serviceOrderReference(order),
+                customerInfo: [order.clientName || 'Cliente', formatBrazilianPhone(order.clientPhone) || 'Sem telefone', email],
+                documentInfo: [
+                    { label: 'Emissão:', value: new Date(order.createdAt || Date.now()).toLocaleDateString('pt-BR') },
+                    { label: 'Status:', value: order.status || 'Aberta' },
+                    ...(!isVenda && order.device ? [{ label: 'Equipamento:', value: order.device }] : []),
+                    ...(!isVenda && order.warranty ? [{ label: 'Garantia:', value: order.warranty }] : []),
+                ],
+                tableColumns: ['Tipo', 'Item', 'Qtd', 'V. Unit', 'Total'],
+                tableRows: rows,
+                totalLabel: 'VALOR TOTAL:',
+                totalValue: total,
+                terms: isVenda ? '' : `Garantia de ${order.warranty || '90 dias'} para peças e serviços, contada da data de retirada. A garantia cobre exclusivamente o serviço executado e/ou as peças substituídas. Não cobre danos por mau uso, oxidação, quedas, contato com líquidos, surtos elétricos ou violação do lacre técnico.`,
+                pixPayload: mpConfigured ? pixPayments[order.id]?.qrCode : generatePixPayload(tenant.pixKey, tenant.pixName, tenant.city || 'Manaus', balance || total, `OS${String(order.id).replace(/-/g, '').slice(0, 10).toUpperCase()}`),
+                premiumStyle: true,
+                summaryRows: [
+                    { label: 'TOTAL PAGO', value: `R$ ${paid.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, color: [36, 65, 180] },
+                    { label: 'SALDO EM ABERTO', value: `R$ ${balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, color: balance > 0 ? [217, 119, 6] : [22, 163, 74] },
+                    { label: 'SITUAÇÃO', value: order.paymentStatus || (balance === 0 ? 'PAGO' : 'PENDENTE'), color: balance === 0 ? [22, 163, 74] : [217, 119, 6] },
+                ],
+                paymentRows: (order.payments || []).map((payment: any) => [
+                    new Date(payment.paidAt).toLocaleString('pt-BR'), payment.method || '-',
+                    `R$ ${Number(payment.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, payment.note || '',
+                ]),
+                signatureLabels: ['Assinatura do cliente', tenant.shortName || tenant.businessName || 'Empresa'],
+                filename: `OS_${serviceOrderNumber(order)}.pdf`,
+                returnBase64: true,
+                save: false,
+            });
+            if (!pdf?.base64) throw new Error('Não foi possível montar o PDF.');
+
+            return await notify({
+                channel: 'email',
+                to: email,
+                subject: `${isVenda ? 'Recibo de venda' : 'Ordem de Serviço'} ${serviceOrderReference(order)} — ${tenant?.businessName || 'Feitosa Soluções'}`,
+                message: `Olá, ${order.clientName || 'cliente'}!\n\nSua ${isVenda ? 'venda' : 'Ordem de Serviço'} está com status “${order.status || 'Aberta'}”.\nValor total: R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}.\nSituação do pagamento: ${order.paymentStatus || 'Pendente'}.\n\nO documento completo segue em anexo.`,
+                pdfBase64: pdf.base64,
+                pdfFilename: pdf.filename,
+            });
+        } catch (error: any) {
+            console.error(error);
+            if (!automatic) showToast.error(error?.message || 'Não foi possível enviar a O.S. por e-mail.');
+            return false;
         }
     };
 
@@ -664,7 +930,7 @@ const ServiceOrdersManager = () => {
                     { label: 'Emissão:', value: new Date(issuedAt).toLocaleString('pt-BR') },
                     { label: 'Ambiente:', value: 'TESTE LOCAL' },
                     { label: 'Situação:', value: 'SIMULADA' },
-                    { label: 'Referência:', value: `O.S. #${String(order.id).slice(0, 8).toUpperCase()}` },
+                    { label: 'Referência:', value: `O.S. ${serviceOrderReference(order)}` },
                 ],
                 tableColumns: ['Descrição do serviço', 'Qtd', 'V. Unit.', 'Total'],
                 tableRows: rows,
@@ -750,7 +1016,9 @@ const ServiceOrdersManager = () => {
             case 'Aguardando Peça': return '#f59e0b';
             case 'Aprovando Orçamento': return '#8b5cf6';
             case 'Concluída': return 'var(--color-success)';
+            case 'Finalizada': return 'var(--color-success)';
             case 'Entregue': return '#10b981';
+            case 'Paga': return '#10b981';
             case 'Pago': return '#10b981';
             case 'Cancelada': return 'var(--color-danger)';
             default: return 'var(--color-text-muted)';
@@ -770,10 +1038,12 @@ const ServiceOrdersManager = () => {
             case 'Aprovada':
                 return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30';
             case 'Concluída':
+            case 'Finalizada':
                 return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
             case 'Entregue':
                 return 'bg-teal-500/10 text-teal-400 border-teal-500/30';
             case 'Pago':
+            case 'Paga':
                 return 'bg-emerald-500/15 text-emerald-300 border-emerald-400/40';
             case 'Cancelada':
                 return 'bg-rose-500/10 text-rose-400 border-rose-500/30';
@@ -782,11 +1052,19 @@ const ServiceOrdersManager = () => {
         }
     };
 
-    const filteredOrders = orders.filter(o => 
-        o.clientName?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        o.device?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        o.id.includes(searchTerm)
-    );
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const filteredOrders = [...orders]
+        .filter(o =>
+            o.clientName?.toLowerCase().includes(normalizedSearch) ||
+            o.device?.toLowerCase().includes(normalizedSearch) ||
+            String(o.id || '').toLowerCase().includes(normalizedSearch) ||
+            serviceOrderNumber(o).toLowerCase().includes(normalizedSearch)
+        )
+        .sort((left, right) => {
+            const dateDifference = new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime();
+            if (dateDifference !== 0) return dateDifference;
+            return Number(right.orderNumber || 0) - Number(left.orderNumber || 0);
+        });
 
     return (
         <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto animate-in fade-in duration-500">
@@ -858,7 +1136,7 @@ const ServiceOrdersManager = () => {
                     <div>
                         <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Concluídas</div>
                         <div className="text-2xl font-extrabold text-emerald-400 mt-0.5">
-                            {orders.filter(o => ['Concluída', 'Entregue', 'Aprovada'].includes(o.status)).length}
+                            {orders.filter(o => ['Concluída', 'Finalizada', 'Entregue', 'Aprovada', 'Paga', 'Pago'].includes(o.status)).length}
                         </div>
                     </div>
                 </div>
@@ -939,13 +1217,22 @@ const ServiceOrdersManager = () => {
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                                     Buscar Cliente Cadastrado
                                 </label>
+                                <input aria-label="Buscar cliente pelo início do nome" placeholder="Digite as primeiras letras do cliente…" list="os-customer-names"
+                                    className="w-full mb-2 bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200"
+                                    onChange={event => {
+                                        const match = customers.find(customer => `${customer.name} — ${customer.phone || customer.email || customer.id}` === event.target.value);
+                                        if (match) handleCustomerChange({ target: { value: match.id } });
+                                    }} />
+                                <datalist id="os-customer-names">
+                                    {[...customers].sort((a, b) => String(a.name).localeCompare(String(b.name), 'pt-BR')).map(customer => <option key={customer.id} value={`${customer.name} — ${customer.phone || customer.email || customer.id}`} />)}
+                                </datalist>
                                 <select 
                                     value={formData.customerId} 
                                     onChange={handleCustomerChange} 
                                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
                                 >
                                     <option value="">-- Selecione ou digite manualmente abaixo --</option>
-                                    {customers.map(c => (
+                                    {[...customers].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR', { sensitivity: 'base' })).map(c => (
                                         <option key={c.id} value={c.id}>{c.name} ({c.phone || c.email || 'Sem contato'})</option>
                                     ))}
                                 </select>
@@ -1004,7 +1291,7 @@ const ServiceOrdersManager = () => {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="md:col-span-2">
                                         <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                                            Aparelho / Equipamento *
+                                            Aparelho / Equipamento (opcional)
                                         </label>
                                         <input 
                                             name="device" 
@@ -1012,7 +1299,6 @@ const ServiceOrdersManager = () => {
                                             value={formData.device} 
                                             onChange={handleChange} 
                                             className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all" 
-                                            required={formData.orderType === 'Manutenção'} 
                                         />
                                     </div>
                                     <div>
@@ -1041,7 +1327,7 @@ const ServiceOrdersManager = () => {
                                     </div>
                                     <div className="md:col-span-2">
                                         <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                                            Defeito Relatado *
+                                            Defeito Relatado (opcional)
                                         </label>
                                         <textarea 
                                             name="issueDescription" 
@@ -1049,7 +1335,6 @@ const ServiceOrdersManager = () => {
                                             value={formData.issueDescription} 
                                             onChange={handleChange} 
                                             className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all min-h-[80px] resize-y" 
-                                            required={formData.orderType === 'Manutenção'} 
                                         />
                                     </div>
                                     <div className="md:col-span-2">
@@ -1076,15 +1361,25 @@ const ServiceOrdersManager = () => {
                             <div className="flex flex-col sm:flex-row gap-3">
                                 <select 
                                     value={selectedItem} 
-                                    onChange={e => setSelectedItem(e.target.value)} 
+                                    onChange={e => handleSelectedItemChange(e.target.value)}
                                     className="flex-1 bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
                                 >
                                     <option value="">-- Adicionar Produto ou Serviço --</option>
                                     {inventory.map(item => (
-                                        <option key={item.id} value={item.id}>{item._label}</option>
+                                        <option key={item.id} value={String(item.id)}>{item._label}</option>
                                     ))}
                                 </select>
                                 <div className="flex gap-2">
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        placeholder="Valor na O.S."
+                                        value={itemPrice}
+                                        onChange={e => setItemPrice(e.target.value)}
+                                        className="w-32 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 text-right focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                                        title="Valor aplicado somente nesta ordem de serviço"
+                                    />
                                     <input 
                                         type="number" 
                                         min="1" 
@@ -1124,9 +1419,25 @@ const ServiceOrdersManager = () => {
                                                             {it.type}
                                                         </span>
                                                         {it.name}
+                                                        {Number.isFinite(Number(it.catalogPrice)) && (
+                                                            <div className="text-[10px] text-slate-500 mt-1">Cadastro: R$ {Number(it.catalogPrice).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+                                                        )}
                                                     </td>
                                                     <td className="p-3 text-center text-slate-300">{it.qty}</td>
-                                                    <td className="p-3 text-right text-slate-300">R$ {Number(it.price || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
+                                                    <td className="p-3 text-right text-slate-300">
+                                                        <div className="flex items-center justify-end gap-1">
+                                                            <span className="text-xs text-slate-500">R$</span>
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                step="0.01"
+                                                                value={Number(it.price || 0)}
+                                                                onChange={event => handleOrderItemPriceChange(idx, event.target.value)}
+                                                                className="w-24 rounded-lg border border-slate-700 bg-slate-950/80 px-2 py-1.5 text-right text-sm text-slate-200 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                                                                aria-label={`Valor de ${it.name} nesta ordem de serviço`}
+                                                            />
+                                                        </div>
+                                                    </td>
                                                     <td className="p-3 text-right font-semibold text-slate-200">R$ {(Number(it.price || 0) * it.qty).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
                                                     <td className="p-3 text-center">
                                                         <button 
@@ -1146,9 +1457,67 @@ const ServiceOrdersManager = () => {
                             )}
                         </div>
 
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                            <div className="bg-slate-950/40 rounded-2xl border border-slate-800/80 p-5 space-y-4">
+                                <h4 className="text-sm font-semibold text-rose-300">Despesas desta O.S.</h4>
+                                <div className="grid grid-cols-[1fr_120px_auto] gap-2">
+                                    <input value={expenseDescription} onChange={e => setExpenseDescription(e.target.value)} placeholder="Descrição da despesa" className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200" />
+                                    <input value={expenseAmount} onChange={e => setExpenseAmount(e.target.value)} placeholder="R$ 0,00" inputMode="decimal" className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-right text-slate-200" />
+                                    <button type="button" onClick={handleAddExpense} className="px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white">Adicionar</button>
+                                </div>
+                                {formData.expenses.map((expense, index) => (
+                                    <div key={expense.id || index} className="flex items-center justify-between gap-3 text-sm border-t border-slate-800 pt-2">
+                                        <span className="text-slate-300">{expense.description}</span>
+                                        <div className="flex items-center gap-2"><span className="font-semibold text-rose-300">R$ {Number(expense.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><button type="button" onClick={() => setFormData({ ...formData, expenses: formData.expenses.filter((_, i) => i !== index) })} className="text-slate-500 hover:text-rose-400"><Trash2 className="w-4 h-4" /></button></div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="bg-slate-950/40 rounded-2xl border border-slate-800/80 p-5 space-y-4">
+                                <h4 className="text-sm font-semibold text-emerald-300">Pagamentos da O.S.</h4>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} className="col-span-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200">
+                                        <option value="Dinheiro">Dinheiro</option><option value="PIX">PIX</option><option value="Crédito">Crédito</option><option value="Débito">Débito</option><option value="A prazo">Pagamento a prazo</option>
+                                    </select>
+                                    {paymentMethod !== 'A prazo' && <>
+                                        <input value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} placeholder="Valor recebido" inputMode="decimal" className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200" />
+                                        <input value={paymentNote} onChange={e => setPaymentNote(e.target.value)} placeholder="Observação" className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200" />
+                                        <button type="button" onClick={() => setPaymentAmount(String(balanceDue || finalTotal))} className="px-3 py-2 rounded-xl border border-slate-700 text-sm text-slate-300 hover:bg-slate-800">Usar saldo total</button>
+                                        <button type="button" onClick={handleAddPayment} className="px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white">Registrar pagamento</button>
+                                    </>}
+                                </div>
+                                {paymentMethod === 'A prazo' && (
+                                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 space-y-3">
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <label className="text-[11px] text-slate-400">Parcelas<input type="number" min="1" max="60" value={installmentCount} onChange={e => setInstallmentCount(Number(e.target.value))} className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-sm text-slate-200" /></label>
+                                            <label className="text-[11px] text-slate-400">Dias entre parcelas<input type="number" min="1" max="365" value={installmentIntervalDays} onChange={e => setInstallmentIntervalDays(Number(e.target.value))} className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-sm text-slate-200" /></label>
+                                            <label className="text-[11px] text-slate-400">1º vencimento<input type="date" value={firstDueDate} onChange={e => setFirstDueDate(e.target.value)} className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-sm text-slate-200" /></label>
+                                        </div>
+                                        <button type="button" onClick={handleGenerateInstallments} className="w-full px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold">Calcular vencimentos</button>
+                                    </div>
+                                )}
+                                {formData.installments.length > 0 && (
+                                    <div className="rounded-xl border border-slate-800 overflow-hidden">
+                                        {formData.installments.map((installment, index) => (
+                                            <div key={installment.id || index} className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b last:border-0 border-slate-800">
+                                                <span className="text-slate-300">{installment.number || index + 1}/{formData.installments.length} · vence {new Date(`${installment.dueDate}T12:00:00`).toLocaleDateString('pt-BR')}</span>
+                                                <span className={installment.status === 'Pago' ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>R$ {Number(installment.amount ?? installment.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {installment.status}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                {formData.payments.map((payment, index) => (
+                                    <div key={payment.id || index} className="flex items-center justify-between gap-3 text-sm border-t border-slate-800 pt-2">
+                                        <span className="text-slate-300">{payment.method} · {new Date(payment.paidAt).toLocaleString('pt-BR')}</span>
+                                        <div className="flex items-center gap-2"><span className="font-semibold text-emerald-300">R$ {Number(payment.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><button type="button" onClick={() => setFormData({ ...formData, payments: formData.payments.filter((_, i) => i !== index) })} className="text-slate-500 hover:text-rose-400"><Trash2 className="w-4 h-4" /></button></div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
                         {/* Fechamento & Totais */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-end border-t border-slate-800/80 pt-6">
-                            <div>
+                            <div className="grid grid-cols-1 gap-4">
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                                     Status da O.S.
                                 </label>
@@ -1165,15 +1534,27 @@ const ServiceOrdersManager = () => {
                                     <option value="Aprovada">Aprovada</option>
                                     <option value="Concluída">Concluída</option>
                                     <option value="Entregue">Entregue</option>
-                                    <option value="Pago">Pago</option>
+                                    <option value="Finalizada">Finalizada</option>
+                                    <option value="Paga">Paga</option>
+                                    <option value="Pago">Pago (legado)</option>
                                     <option value="Cancelada">Cancelada</option>
                                 </select>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Situação do pagamento</label>
+                                    <select name="paymentStatus" value={formData.paymentStatus} onChange={handleChange} className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-base font-medium text-slate-200">
+                                        <option value="Pendente">Pendente</option><option value="Parcial">Parcial</option><option value="Pago">Pago</option><option value="Cancelado">Cancelado</option>
+                                    </select>
+                                </div>
                             </div>
                             
                             <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800 flex flex-col items-end gap-1.5 shadow-inner">
                                 <div className="text-xs font-medium text-slate-400">
                                     Subtotal dos itens: <span className="text-slate-200 font-semibold">R$ {calculatedTotal.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span>
                                 </div>
+                                <div className="text-xs text-slate-400">Custo dos itens: <span className="text-rose-300 font-semibold">R$ {itemCostTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>
+                                <div className="text-xs text-slate-400">Despesas: <span className="text-rose-300 font-semibold">R$ {orderExpenseTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>
+                                <div className="text-xs text-slate-400">Lucro líquido: <span className={netProfit >= 0 ? 'text-emerald-300 font-semibold' : 'text-rose-300 font-semibold'}>R$ {netProfit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>
+                                <div className="text-xs text-slate-400">Total pago: <span className="text-blue-300 font-semibold">R$ {paidTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span> · Saldo: <span className="text-amber-300 font-semibold">R$ {balanceDue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></div>
                                 <div className="flex items-center gap-3">
                                     <span className="text-sm font-bold text-slate-200">Valor Final (R$):</span>
                                     <input 
@@ -1229,7 +1610,7 @@ const ServiceOrdersManager = () => {
                                     <tr key={order.id} className="hover:bg-slate-800/40 transition-colors">
                                         <td className="py-4 px-5">
                                             <div className="font-mono font-bold text-indigo-300">
-                                                #{order.id.substring(0, 6).toUpperCase()}
+                                                {serviceOrderReference(order)}
                                             </div>
                                             <div className="text-xs text-slate-400 mt-0.5">
                                                 {new Date(order.createdAt).toLocaleDateString('pt-BR')}
@@ -1266,15 +1647,13 @@ const ServiceOrdersManager = () => {
                                                     NFS-e homol. {order.nfseHomologation.status.toLowerCase()}
                                                 </span>
                                             )}
-                                            {order.paymentStatus === 'Pago' && (
-                                                <span className="inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                                    PIX pago
-                                                </span>
-                                            )}
+                                            <span className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${order.paymentStatus === 'Pago' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : order.paymentStatus === 'Parcial' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-slate-500/10 text-slate-400 border-slate-500/20'}`}>
+                                                {order.paymentStatus || 'Pendente'}
+                                            </span>
                                         </td>
                                         <td className="py-4 px-5 text-right">
                                             <div className="flex items-center justify-end gap-1">
-                                                {order.paymentStatus === 'Pago' ? null : pixPayments[order.id]?.qrCode ? (
+                                                {!mpConfigured || order.paymentStatus === 'Pago' ? null : pixPayments[order.id]?.qrCode ? (
                                                     <button
                                                         onClick={() => setPixModal({ order, payment: pixPayments[order.id] })}
                                                         className="p-2 text-yellow-400 hover:bg-yellow-500/10 rounded-lg transition-all"
@@ -1294,9 +1673,16 @@ const ServiceOrdersManager = () => {
                                                 <button 
                                                     onClick={() => printOrder(order)} 
                                                     className="p-2 rounded-lg text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 transition-all cursor-pointer" 
-                                                    title="Imprimir PDF"
+                                                    title="Imprimir via do cliente"
                                                 >
                                                     <Printer className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => sendOrderEmail(order)}
+                                                    className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-cyan-500/10 transition-all cursor-pointer"
+                                                    title="Enviar O.S. premium por e-mail"
+                                                >
+                                                    <Mail className="w-4 h-4" />
                                                 </button>
                                                 {order.orderType !== 'Venda Direta' && (
                                                     <button
@@ -1362,7 +1748,7 @@ const ServiceOrdersManager = () => {
                     <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl" onClick={event => event.stopPropagation()}>
                         <div className="flex items-center justify-between mb-5">
                             <div>
-                                <h3 className="text-xl font-bold text-white">PIX da venda #{String(pixModal.order.id).slice(0, 8).toUpperCase()}</h3>
+                                <h3 className="text-xl font-bold text-white">PIX da venda {serviceOrderReference(pixModal.order)}</h3>
                                 <p className="text-sm text-slate-400">{pixModal.order.clientName} — R$ {resolveOrderTotal(pixModal.order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                             </div>
                             <button onClick={() => setPixModal(null)} className="p-2 text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>

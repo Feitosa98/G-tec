@@ -11,7 +11,10 @@ const ProductManager = () => {
     const [editingProduct, setEditingProduct] = useState(null);
     const [uploading, setUploading] = useState(false);
     const [formData, setFormData] = useState({
-        name: '', price: '', costPrice: '', category: 'Gamer', department: 'Notebooks', brand: '', image: '', cpumodel: '', gpumodel: '', ram: '', storage: ''
+        name: '', price: '', costPrice: '', category: 'Gamer', department: 'Notebooks', brand: '', image: '', cpumodel: '', gpumodel: '', ram: '', storage: '',
+        ncm: '', cest: '', cfop: '', unit: 'UN', origin: '', icmsCst: '', csosn: '', icmsRate: '',
+        ipiCst: '', ipiRate: '', pisCst: '', pisRate: '', cofinsCst: '', cofinsRate: '',
+        ibsCbsCst: '', taxClassification: '', ibsRate: '', cbsRate: '', benefitCode: ''
     });
 
     const handleChange = (e) => {
@@ -48,7 +51,14 @@ const ProductManager = () => {
             cpumodel: product.specs?.cpu || '',
             gpumodel: product.specs?.gpu || '',
             ram: product.specs?.ram || '',
-            storage: product.specs?.storage || ''
+            storage: product.specs?.storage || '',
+            ncm: product.ncm || '', cest: product.cest || '', cfop: product.cfop || '', unit: product.unit || 'UN',
+            origin: product.fiscal?.origin || '', icmsCst: product.fiscal?.icmsCst || '', csosn: product.fiscal?.csosn || '', icmsRate: product.fiscal?.icmsRate ?? '',
+            ipiCst: product.fiscal?.ipiCst || '', ipiRate: product.fiscal?.ipiRate ?? '',
+            pisCst: product.fiscal?.pisCst || '', pisRate: product.fiscal?.pisRate ?? '',
+            cofinsCst: product.fiscal?.cofinsCst || '', cofinsRate: product.fiscal?.cofinsRate ?? '',
+            ibsCbsCst: product.fiscal?.ibsCbsCst || '', taxClassification: product.fiscal?.taxClassification || '',
+            ibsRate: product.fiscal?.ibsRate ?? '', cbsRate: product.fiscal?.cbsRate ?? '', benefitCode: product.fiscal?.benefitCode || ''
         });
         setIsFormOpen(true);
     };
@@ -64,6 +74,19 @@ const ProductManager = () => {
             department: formData.department,
             brand: formData.brand,
             image: formData.image || "https://images.unsplash.com/photo-1593640408182-31c70c8268f5?q=80&w=1000",
+            ncm: formData.ncm.replace(/\D/g, ''), cest: formData.cest.replace(/\D/g, ''),
+            cfop: formData.cfop.replace(/\D/g, ''), unit: formData.unit.trim().toUpperCase() || 'UN',
+            fiscal: {
+                ...(editingProduct?.fiscal || {}),
+                origin: formData.origin, icmsCst: formData.icmsCst, csosn: formData.csosn,
+                icmsRate: formData.icmsRate === '' ? undefined : Number(formData.icmsRate),
+                ipiCst: formData.ipiCst, ipiRate: formData.ipiRate === '' ? undefined : Number(formData.ipiRate),
+                pisCst: formData.pisCst, pisRate: formData.pisRate === '' ? undefined : Number(formData.pisRate),
+                cofinsCst: formData.cofinsCst, cofinsRate: formData.cofinsRate === '' ? undefined : Number(formData.cofinsRate),
+                ibsCbsCst: formData.ibsCbsCst, taxClassification: formData.taxClassification,
+                ibsRate: formData.ibsRate === '' ? undefined : Number(formData.ibsRate),
+                cbsRate: formData.cbsRate === '' ? undefined : Number(formData.cbsRate), benefitCode: formData.benefitCode,
+            },
             specs: {
                 cpu: formData.cpumodel,
                 gpu: formData.gpumodel,
@@ -83,7 +106,11 @@ const ProductManager = () => {
 
         setIsFormOpen(false);
         setEditingProduct(null);
-        setFormData({ name: '', price: '', costPrice: '', category: 'Gamer', department: 'Notebooks', brand: '', image: '', cpumodel: '', gpumodel: '', ram: '', storage: '' });
+        setFormData({
+            name: '', price: '', costPrice: '', category: 'Gamer', department: 'Notebooks', brand: '', image: '', cpumodel: '', gpumodel: '', ram: '', storage: '',
+            ncm: '', cest: '', cfop: '', unit: 'UN', origin: '', icmsCst: '', csosn: '', icmsRate: '', ipiCst: '', ipiRate: '',
+            pisCst: '', pisRate: '', cofinsCst: '', cofinsRate: '', ibsCbsCst: '', taxClassification: '', ibsRate: '', cbsRate: '', benefitCode: ''
+        });
     };
 
     const inputClasses = "w-full bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-4 py-3 text-slate-200 placeholder-slate-500 text-sm outline-none transition-all duration-200";
@@ -101,7 +128,7 @@ const ProductManager = () => {
                     </p>
                 </div>
                 <button
-                    onClick={() => navigate('/admin/create-product')}
+                    onClick={() => navigate('/admin/cadastros?tipo=novo-produto')}
                     className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 transition-all duration-200 cursor-pointer active:scale-95 self-start sm:self-auto"
                 >
                     <Plus size={20} />
@@ -202,6 +229,32 @@ const ProductManager = () => {
                             className={inputClasses}
                         />
 
+                        <div className="md:col-span-2 mt-2 border-t border-slate-800 pt-5">
+                            <h4 className="mb-1 font-semibold text-cyan-300">Dados fiscais do produto</h4>
+                            <p className="mb-4 text-xs text-slate-400">Utilizados na emissão fiscal. Confirme a tributação com a contabilidade da empresa.</p>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <input name="ncm" inputMode="numeric" maxLength={8} placeholder="NCM (8 números)" value={formData.ncm} onChange={handleChange} className={inputClasses} />
+                                <input name="cest" inputMode="numeric" maxLength={7} placeholder="CEST" value={formData.cest} onChange={handleChange} className={inputClasses} />
+                                <input name="cfop" inputMode="numeric" maxLength={4} placeholder="CFOP" value={formData.cfop} onChange={handleChange} className={inputClasses} />
+                                <input name="unit" maxLength={6} placeholder="Unidade (UN)" value={formData.unit} onChange={handleChange} className={inputClasses} />
+                                <input name="origin" inputMode="numeric" maxLength={1} placeholder="Origem ICMS" value={formData.origin} onChange={handleChange} className={inputClasses} />
+                                <input name="icmsCst" inputMode="numeric" maxLength={3} placeholder="CST ICMS" value={formData.icmsCst} onChange={handleChange} className={inputClasses} />
+                                <input name="csosn" inputMode="numeric" maxLength={3} placeholder="CSOSN" value={formData.csosn} onChange={handleChange} className={inputClasses} />
+                                <input name="icmsRate" type="number" min="0" step="0.01" placeholder="ICMS %" value={formData.icmsRate} onChange={handleChange} className={inputClasses} />
+                                <input name="ipiCst" inputMode="numeric" maxLength={2} placeholder="CST IPI" value={formData.ipiCst} onChange={handleChange} className={inputClasses} />
+                                <input name="ipiRate" type="number" min="0" step="0.01" placeholder="IPI %" value={formData.ipiRate} onChange={handleChange} className={inputClasses} />
+                                <input name="pisCst" inputMode="numeric" maxLength={2} placeholder="CST PIS" value={formData.pisCst} onChange={handleChange} className={inputClasses} />
+                                <input name="pisRate" type="number" min="0" step="0.01" placeholder="PIS %" value={formData.pisRate} onChange={handleChange} className={inputClasses} />
+                                <input name="cofinsCst" inputMode="numeric" maxLength={2} placeholder="CST COFINS" value={formData.cofinsCst} onChange={handleChange} className={inputClasses} />
+                                <input name="cofinsRate" type="number" min="0" step="0.01" placeholder="COFINS %" value={formData.cofinsRate} onChange={handleChange} className={inputClasses} />
+                                <input name="ibsCbsCst" inputMode="numeric" maxLength={3} placeholder="CST IBS/CBS" value={formData.ibsCbsCst} onChange={handleChange} className={inputClasses} />
+                                <input name="taxClassification" inputMode="numeric" maxLength={6} placeholder="Classificação tributária" value={formData.taxClassification} onChange={handleChange} className={inputClasses} />
+                                <input name="ibsRate" type="number" min="0" step="0.0001" placeholder="IBS %" value={formData.ibsRate} onChange={handleChange} className={inputClasses} />
+                                <input name="cbsRate" type="number" min="0" step="0.0001" placeholder="CBS %" value={formData.cbsRate} onChange={handleChange} className={inputClasses} />
+                                <input name="benefitCode" placeholder="Código benefício fiscal" value={formData.benefitCode} onChange={handleChange} className={`${inputClasses} col-span-2`} />
+                            </div>
+                        </div>
+
                         <div className="md:col-span-2 flex flex-col sm:flex-row gap-3 items-center">
                             <div className="flex-1 w-full">
                                 <input
@@ -268,6 +321,7 @@ const ProductManager = () => {
                             <tr className="bg-slate-950/60 border-b border-slate-800">
                                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Produto</th>
                                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Marca</th>
+                                <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Fiscal</th>
                                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Custo</th>
                                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Venda</th>
                                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Lucro Unit.</th>
@@ -275,10 +329,11 @@ const ProductManager = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/60">
-                            {products.map(product => (
+                            {[...products].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt-BR', { sensitivity: 'base' })).map(product => (
                                 <tr key={product.id} className="hover:bg-slate-800/40 transition-colors duration-150">
                                     <td className="px-6 py-4 text-sm font-semibold text-slate-200">{product.name}</td>
                                     <td className="px-6 py-4 text-sm text-slate-400">{product.brand}</td>
+                                    <td className="px-6 py-4 text-xs text-slate-400"><strong className="text-slate-200">NCM {product.ncm || '-'}</strong><br />CFOP {product.cfop || '-'} · {product.fiscal?.csosn ? `CSOSN ${product.fiscal.csosn}` : `CST ${product.fiscal?.icmsCst || '-'}`}</td>
                                     <td className="px-6 py-4 text-sm font-medium text-rose-400">R$ {product.costPrice?.toLocaleString('pt-BR')}</td>
                                     <td className="px-6 py-4 text-sm font-medium text-emerald-400">R$ {product.price?.toLocaleString('pt-BR')}</td>
                                     <td className="px-6 py-4 text-sm font-semibold text-cyan-400">R$ {(product.price - (product.costPrice || 0)).toLocaleString('pt-BR')}</td>

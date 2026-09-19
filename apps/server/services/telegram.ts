@@ -9,16 +9,12 @@ function getBot(token: string) {
     return bots.get(token)!;
 }
 
-export async function sendTelegramMessage(tenantDb: any, message: string, chatId?: string) {
-    const configDoc = await tenantDb.query.integrations.findFirst({
-        where: (integrations: any, { eq }: any) => eq(integrations.id, 'telegram')
-    });
-
-    if (!configDoc || !configDoc.data || !configDoc.data.token) {
+export async function sendTelegramMessage(config: any, message: string, chatId?: string) {
+    if (!config?.token) {
         throw new Error('Telegram integration not configured');
     }
 
-    const { token, defaultChatId } = configDoc.data;
+    const { token, defaultChatId } = config;
     const targetChatId = chatId || defaultChatId;
 
     if (!targetChatId) {

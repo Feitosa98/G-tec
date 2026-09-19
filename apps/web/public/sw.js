@@ -1,4 +1,4 @@
-const CACHE_NAME = 'feitosa-solucoes-v2';
+const CACHE_NAME = 'feitosa-solucoes-hostinger-v4';
 const STATIC_ASSETS = [
     '/',
     '/admin',
@@ -24,13 +24,27 @@ self.addEventListener('activate', (event) => {
 // Network-first strategy: tenta rede, cai no cache se offline
 self.addEventListener('fetch', (event) => {
     // Não intercepta requisições de API
-    if (event.request.url.includes('/api/')) return;
+    if (event.request.method !== 'GET' || event.request.url.includes('/api/')) return;
+
+    const url = new URL(event.request.url);
+    const isVersionedAsset = url.origin === self.location.origin
+        && (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/ocr/'));
+
+    if (isVersionedAsset) {
+        event.respondWith(
+            caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
+                if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+                return response;
+            }))
+        );
+        return;
+    }
 
     event.respondWith(
         fetch(event.request)
             .then((res) => {
                 const clone = res.clone();
-                caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+                if (res.ok) caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
                 return res;
             })
             .catch(() => caches.match(event.request))

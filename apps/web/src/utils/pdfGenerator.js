@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import QRCode from 'qrcode';
+export { generateDanfseOfficialPDF as generateDanfsePDF } from './danfseGenerator';
 
 const loadImage = (src) => {
     return new Promise((resolve) => {
@@ -55,14 +56,19 @@ export const generateProfessionalPDF = async (options) => {
         totalValue = 0,
         terms = '',
         testMode = false,
+        premiumStyle = false,
+        compactStyle = false,
+        summaryRows = [],
+        paymentRows = [],
+        signatureLabels = [],
     } = options;
 
     try {
         const doc = new jsPDF();
         
         // Colors mapped to the new theme
-        const colorPrimary = [9, 9, 11]; // Zinc 950
-        const colorAccent = [59, 130, 246]; // Blue 500
+        const colorPrimary = premiumStyle ? [36, 65, 180] : [9, 9, 11];
+        const colorAccent = premiumStyle ? [13, 184, 220] : [59, 130, 246];
         const colorText = [63, 63, 70]; // Zinc 700
         const colorLight = [244, 244, 245]; // Zinc 50
 
@@ -128,7 +134,7 @@ export const generateProfessionalPDF = async (options) => {
         doc.setTextColor(...colorPrimary);
         doc.setFontSize(11);
         doc.setFont('helvetica', 'bold');
-        doc.text('Faturado Para:', 15, startY);
+        doc.text(options.customerHeading || 'Faturado Para:', 15, startY);
 
         doc.setFontSize(10);
         doc.setFont('helvetica', 'normal');
@@ -156,6 +162,7 @@ export const generateProfessionalPDF = async (options) => {
 
         // --- TABLE ---
         autoTable(doc, {
+            margin: { left: 15, right: 15, bottom: 20 },
             startY: startY + 35,
             head: [tableColumns],
             body: tableRows,
@@ -165,17 +172,17 @@ export const generateProfessionalPDF = async (options) => {
                 textColor: [255, 255, 255],
                 fontStyle: 'bold',
                 halign: 'left',
-                fontSize: 9
+                fontSize: compactStyle ? 8 : 9
             },
             bodyStyles: {
                 textColor: colorText,
-                fontSize: 9,
-                cellPadding: 4
+                fontSize: compactStyle ? 8 : 9,
+                cellPadding: compactStyle ? 2.2 : 4
             },
             alternateRowStyles: {
                 fillColor: [250, 250, 250]
             },
-            columnStyles: tableColumns.length === 5 ? {
+            columnStyles: options.columnStyles || (tableColumns.length === 5 ? {
                 0: { cellWidth: 23 },
                 1: { cellWidth: 'auto' },
                 2: { cellWidth: 18, halign: 'center' },
@@ -186,11 +193,13 @@ export const generateProfessionalPDF = async (options) => {
                 1: { cellWidth: 18, halign: 'center' },
                 2: { cellWidth: 35, halign: 'right' },
                 3: { cellWidth: 35, halign: 'right', fontStyle: 'bold' }
-            },
+            }),
         });
 
         // --- TOTAL SUMMARY ---
-        let finalY = doc.lastAutoTable.finalY + 15;
+        let finalY = doc.lastAutoTable.finalY + (compactStyle ? 9 : 15);
+        const requiredSummarySpace = 25 + (summaryRows.length ? 28 + summaryRows.length * 7 : 0);
+        if (finalY + requiredSummarySpace > doc.internal.pageSize.height - 20) { doc.addPage(); finalY = 28; }
         
         // Background for total
         doc.setFillColor(...colorLight);
@@ -208,14 +217,78 @@ export const generateProfessionalPDF = async (options) => {
         doc.setTextColor(...colorAccent); 
         doc.text(`R$ ${totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, 190, finalY + 2, { align: 'right' });
 
+        if (summaryRows.length) {
+            finalY += compactStyle ? 15 : 20;
+            const summaryHeight = Math.max(20, summaryRows.length * (compactStyle ? 6 : 7) + 8);
+            doc.setFillColor(248, 250, 252);
+            doc.setDrawColor(226, 232, 240);
+            doc.roundedRect(110, finalY, 85, summaryHeight, 2, 2, 'FD');
+            summaryRows.forEach((row, index) => {
+                const y = finalY + 7 + (index * (compactStyle ? 6 : 7));
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8.5);
+                doc.setTextColor(100, 116, 139);
+                doc.text(String(row.label || ''), 114, y);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(...(row.color || colorPrimary));
+                doc.text(String(row.value || ''), 191, y, { align: 'right' });
+            });
+            finalY += summaryHeight;
+        }
+
+        if (paymentRows.length) {
+            finalY += compactStyle ? 7 : 12;
+            if (finalY > 225) { doc.addPage(); finalY = 20; }
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(...colorPrimary);
+            doc.text('Histórico de pagamentos', 15, finalY);
+            autoTable(doc, {
+                startY: finalY + 4,
+                head: [['Data', 'Forma', 'Valor', 'Observação']],
+                body: paymentRows,
+                theme: 'grid',
+                headStyles: { fillColor: colorPrimary, textColor: [255, 255, 255], fontSize: 8 },
+                bodyStyles: { fontSize: compactStyle ? 7 : 8, textColor: colorText, cellPadding: compactStyle ? 1.8 : 3 },
+            });
+            finalY = doc.lastAutoTable.finalY;
+        }
+
+        if (signatureLabels.length) {
+            finalY += compactStyle ? 14 : 22;
+            if (finalY > 250) { doc.addPage(); finalY = 35; }
+            const columns = signatureLabels.length;
+            signatureLabels.forEach((label, index) => {
+                const width = 75;
+                const x = columns === 1 ? 67.5 : 15 + index * 105;
+                doc.setDrawColor(203, 213, 225);
+                doc.line(x, finalY, x + width, finalY);
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(8);
+                doc.setTextColor(100, 116, 139);
+                doc.text(label, x, finalY + 6);
+            });
+            finalY += 10;
+        }
+
         // --- TERMS ---
         if (terms) {
-            finalY += 30;
-            doc.setFontSize(7);
-            doc.setFont('helvetica', 'italic');
-            doc.setTextColor(150, 150, 150);
+            finalY += compactStyle ? 7 : 12;
+            if (finalY > 250) { doc.addPage(); finalY = 25; }
+            doc.setFillColor(248, 250, 252);
+            doc.setDrawColor(226, 232, 240);
             const splitTerms = doc.splitTextToSize(terms, 180);
-            doc.text(splitTerms, 15, finalY);
+            const termsHeight = Math.max(18, splitTerms.length * (compactStyle ? 3.1 : 3.5) + 11);
+            doc.roundedRect(15, finalY, 180, termsHeight, 2, 2, 'FD');
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(...colorPrimary);
+            doc.text(options.termsHeading || 'TERMOS DE GARANTIA E RETIRADA', 19, finalY + 6);
+            doc.setFontSize(7);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(71, 85, 105);
+            doc.text(splitTerms, 19, finalY + 11);
+            finalY += termsHeight;
         }
 
         // --- PIX BOX (Optional) ---
@@ -297,7 +370,7 @@ const money = (value) => Number(value || 0).toLocaleString('pt-BR', {
     style: 'currency', currency: 'BRL', minimumFractionDigits: 2,
 });
 
-export const generateDanfsePDF = async ({ tenant, config, order, customer, nfse, returnBase64 = false }) => {
+export const generateDanfsePDFLegacy = async ({ tenant, config, order, customer, nfse, returnBase64 = false }) => {
     try {
         const doc = new jsPDF({ unit: 'mm', format: 'a4' });
         const pageWidth = doc.internal.pageSize.getWidth();

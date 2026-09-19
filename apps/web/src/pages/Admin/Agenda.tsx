@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useData } from '../../hooks/useData';
-import { Calendar, Plus, ChevronLeft, ChevronRight, Clock, User, Phone, X, Save, Edit, Trash2 } from 'lucide-react';
+import { Calendar, Plus, ChevronLeft, ChevronRight, Clock, User, Phone, X, Save, Edit, Trash2, RefreshCw, Cloud } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatBrazilianPhone } from '../../utils/phone';
 
@@ -12,6 +12,8 @@ const TYPE_COLORS: Record<string, string> = {
     'Visita Técnica': 'bg-purple-500/20 border-purple-500/40 text-purple-300',
     'Reunião': 'bg-amber-500/20 border-amber-500/40 text-amber-300',
     'Retirada': 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300',
+    'Cobrança': 'bg-amber-500/20 border-amber-500/40 text-amber-300',
+    'Pagamento': 'bg-rose-500/20 border-rose-500/40 text-rose-300',
     'Outro': 'bg-slate-500/20 border-slate-500/40 text-slate-300',
 };
 
@@ -25,6 +27,8 @@ export default function Agenda() {
     const [editing, setEditing] = useState<any>(null);
     const [form, setForm] = useState(EMPTY_FORM);
     const [selectedDay, setSelectedDay] = useState<number | null>(null);
+    const [calendarStatus, setCalendarStatus] = useState<any>(null);
+    const [syncing, setSyncing] = useState(false);
 
     const getToken = () => {
         try { return JSON.parse(localStorage.getItem('gtec-session'))?.token || ''; }
@@ -34,11 +38,56 @@ export default function Agenda() {
 
     const fetchAppointments = async () => {
         if (!tenant?.storeSlug) return;
-        const res = await fetch(`/api/store/${tenant.storeSlug}/appointments`, { headers });
+        const res = await fetch(`/api/store/${tenant.storeSlug}/agenda/events`, { headers });
         if (res.ok) setAppointments(await res.json());
     };
 
-    useEffect(() => { fetchAppointments(); }, [tenant]);
+    const fetchCalendarStatus = async () => {
+        if (!tenant?.storeSlug) return;
+        const res = await fetch(`/api/store/${tenant.storeSlug}/google/calendar/status`, { headers });
+        if (res.ok) setCalendarStatus(await res.json());
+    };
+
+    useEffect(() => {
+        fetchAppointments();
+        fetchCalendarStatus();
+        const query = new URLSearchParams(window.location.search);
+        if (query.get('google') === 'connected') {
+            toast.success('Google Agenda conectado! A sincronização foi iniciada.');
+            window.history.replaceState({}, '', window.location.pathname);
+        } else if (query.get('google') === 'error') {
+            toast.error(query.get('message') || 'Não foi possível conectar ao Google Agenda.');
+            window.history.replaceState({}, '', window.location.pathname);
+        }
+    }, [tenant?.storeSlug]);
+
+    const connectGoogleCalendar = async () => {
+        const res = await fetch(`/api/store/${tenant.storeSlug}/google/calendar/connect`, { headers });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return toast.error(data.message || 'Não foi possível iniciar a conexão.');
+        window.location.href = data.authUrl;
+    };
+
+    const toggleGoogleCalendar = async () => {
+        const res = await fetch(`/api/store/${tenant.storeSlug}/google/calendar/settings`, {
+            method: 'POST', headers, body: JSON.stringify({ enabled: !calendarStatus?.enabled, calendarId: calendarStatus?.calendarId || 'primary' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return toast.error(data.message || 'Não foi possível alterar a sincronização.');
+        toast.success(data.enabled ? 'Sincronização automática ativada.' : 'Sincronização automática pausada.');
+        fetchCalendarStatus();
+    };
+
+    const syncGoogleCalendar = async () => {
+        setSyncing(true);
+        try {
+            const res = await fetch(`/api/store/${tenant.storeSlug}/google/calendar/sync`, { method: 'POST', headers });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) return toast.error(data.message || 'Falha ao sincronizar.');
+            toast.success(`${data.synced} evento(s) sincronizado(s).`);
+            fetchCalendarStatus();
+        } finally { setSyncing(false); }
+    };
 
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
@@ -54,9 +103,11 @@ export default function Agenda() {
         e.preventDefault();
         if (!form.title || !form.date) { toast.error('Título e data são obrigatórios'); return; }
         const payload = { ...form, id: editing?.id || crypto.randomUUID() };
-        await fetch(`/api/store/${tenant.storeSlug}/appointments`, {
+        const res = await fetch(`/api/store/${tenant.storeSlug}/appointments`, {
             method: 'POST', headers, body: JSON.stringify(payload)
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast.error(data.message || 'Não foi possível salvar o agendamento.'); return; }
         toast.success(editing ? 'Agendamento atualizado!' : 'Agendamento criado!');
         setIsFormOpen(false); setEditing(null); setForm(EMPTY_FORM);
         fetchAppointments();
@@ -64,7 +115,8 @@ export default function Agenda() {
 
     const handleDelete = async (id: string) => {
         if (!confirm('Excluir agendamento?')) return;
-        await fetch(`/api/store/${tenant.storeSlug}/appointments/${id}`, { method: 'DELETE', headers });
+        const res = await fetch(`/api/store/${tenant.storeSlug}/appointments/${id}`, { method: 'DELETE', headers });
+        if (!res.ok) { toast.error('Não foi possível excluir o agendamento.'); return; }
         toast.success('Agendamento excluído'); fetchAppointments();
     };
 
@@ -79,18 +131,36 @@ export default function Agenda() {
 
     return (
         <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-8 fade-in">
-            <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent">Agenda</h1>
-                    <p className="text-slate-400 mt-1">Gerencie entregas, visitas técnicas e compromissos</p>
+                    <p className="text-slate-400 mt-1">Compromissos, pagamentos e cobranças em um só lugar</p>
                 </div>
-                <button
-                    onClick={() => { setEditing(null); setForm(EMPTY_FORM); setIsFormOpen(true); }}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-600/20"
-                >
-                    <Plus className="w-4 h-4" /> Novo Agendamento
-                </button>
+                <div className="flex flex-wrap gap-2">
+                    {!calendarStatus?.connected ? (
+                        <button onClick={connectGoogleCalendar} className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-slate-900 font-semibold rounded-xl hover:bg-slate-100">
+                            <Cloud className="w-4 h-4" /> Conectar Google Agenda
+                        </button>
+                    ) : (
+                        <>
+                            <button onClick={toggleGoogleCalendar} className={`px-4 py-2.5 font-semibold rounded-xl border ${calendarStatus.enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-slate-700 text-slate-300'}`}>
+                                {calendarStatus.enabled ? 'Sincronização ativa' : 'Ativar sincronização'}
+                            </button>
+                            {calendarStatus.enabled && <button onClick={syncGoogleCalendar} disabled={syncing} className="inline-flex items-center gap-2 px-4 py-2.5 border border-slate-700 text-slate-200 rounded-xl hover:bg-slate-800 disabled:opacity-60">
+                                <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} /> Sincronizar agora
+                            </button>}
+                        </>
+                    )}
+                    <button onClick={() => { setEditing(null); setForm(EMPTY_FORM); setIsFormOpen(true); }} className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-600/20">
+                        <Plus className="w-4 h-4" /> Novo Agendamento
+                    </button>
+                </div>
             </header>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-400">
+                Parcelas pendentes aparecem como <span className="text-amber-300">Cobrança</span> e contas a pagar cadastradas como pendentes aparecem como <span className="text-rose-300">Pagamento</span>. Ao dar baixa, o lembrete é retirado automaticamente da agenda e do Google Agenda.
+                {calendarStatus?.lastSyncAt && <span className="block mt-1 text-xs text-slate-500">Última sincronização: {new Date(calendarStatus.lastSyncAt).toLocaleString('pt-BR')} · {calendarStatus.lastSyncCount || 0} evento(s)</span>}
+            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Calendar */}
@@ -181,20 +251,21 @@ export default function Agenda() {
                             <div key={a.id} className="p-4 space-y-2">
                                 <div className="flex items-start justify-between gap-2">
                                     <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${TYPE_COLORS[a.type] || TYPE_COLORS['Outro']}`}>{a.type}</span>
-                                    <div className="flex gap-1">
+                                    {!a.readOnly && <div className="flex gap-1">
                                         <button onClick={() => { setEditing(a); setForm(a); setIsFormOpen(true); }} className="p-1 text-slate-500 hover:text-cyan-400 rounded">
                                             <Edit className="w-3.5 h-3.5" />
                                         </button>
                                         <button onClick={() => handleDelete(a.id)} className="p-1 text-slate-500 hover:text-rose-400 rounded">
                                             <Trash2 className="w-3.5 h-3.5" />
                                         </button>
-                                    </div>
+                                    </div>}
                                 </div>
                                 <p className="text-slate-200 font-medium text-sm">{a.title}</p>
                                 <div className="space-y-1 text-xs text-slate-400">
                                     {a.time && <p className="flex items-center gap-1"><Clock className="w-3 h-3" />{a.date} às {a.time}</p>}
                                     {a.client && <p className="flex items-center gap-1"><User className="w-3 h-3" />{a.client}</p>}
                                     {a.phone && <p className="flex items-center gap-1"><Phone className="w-3 h-3" />{formatBrazilianPhone(a.phone)}</p>}
+                                    {a.amount !== undefined && <p className="font-semibold text-slate-300">{Number(a.amount).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} · {a.status}</p>}
                                     {a.notes && <p className="text-slate-500 italic">{a.notes}</p>}
                                 </div>
                             </div>

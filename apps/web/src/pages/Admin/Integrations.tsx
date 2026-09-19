@@ -3,8 +3,9 @@ import { useData } from '../../hooks/useData';
 import { useAuthStore } from '../../store/authStore';
 import { storeRequest } from '../../utils/api';
 import toast from 'react-hot-toast';
-import { Mail, MessageCircle, Send, QrCode, PowerOff, Save, RefreshCw, CreditCard, ShieldCheck, Upload, Wifi } from 'lucide-react';
+import { Mail, MessageCircle, Send, QrCode, PowerOff, Save, RefreshCw, CreditCard, ShieldCheck, Wifi, Cloud, CalendarDays, HardDrive, Link, Unlink } from 'lucide-react';
 import MercadoPagoPage from './MercadoPagoPage';
+import FiscalCertificate from './FiscalCertificate';
 
 const defaultWaTemplates = {
     chargeCreatedEnabled: true,
@@ -28,7 +29,7 @@ const defaultNfseForm = {
 export default function Integrations() {
     const { tenant } = useData();
     const token = useAuthStore(state => state.user?.token || '');
-    const [activeTab, setActiveTab] = useState<'whatsapp' | 'telegram' | 'email' | 'mercadopago' | 'nfse'>('whatsapp');
+    const [activeTab, setActiveTab] = useState<'whatsapp' | 'telegram' | 'email' | 'google' | 'mercadopago' | 'nfse' | 'certificate'>('whatsapp');
 
     const [emailForm, setEmailForm] = useState({ host: '', port: '', user: '', pass: '', from: '' });
     const [telegramForm, setTelegramForm] = useState({ token: '', defaultChatId: '' });
@@ -42,11 +43,25 @@ export default function Integrations() {
     const [waTemplates, setWaTemplates] = useState(defaultWaTemplates);
     const [savingWaTemplates, setSavingWaTemplates] = useState(false);
     const [nfseForm, setNfseForm] = useState(defaultNfseForm);
-    const [nfseCertificate, setNfseCertificate] = useState('');
-    const [nfseCertificateName, setNfseCertificateName] = useState('');
-    const [nfseCertificatePassword, setNfseCertificatePassword] = useState('');
     const [savingNfse, setSavingNfse] = useState(false);
     const [testingNfse, setTestingNfse] = useState(false);
+    const [googleStatus, setGoogleStatus] = useState({
+        serverConfigured: false, connected: false, connectedAt: '', driveEnabled: false,
+        calendarEnabled: false, lastBackupAt: '', lastSyncAt: '',
+    });
+    const [loadingGoogle, setLoadingGoogle] = useState(false);
+
+    const loadGoogleStatus = async () => {
+        if (!tenant?.storeSlug) return;
+        try {
+            const response = await fetch(`/api/store/${tenant.storeSlug}/google/status`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Falha ao consultar a conta Google.');
+            setGoogleStatus(data);
+        } catch (error: any) {
+            toast.error(error.message);
+        }
+    };
 
     useEffect(() => {
         if (!tenant?.storeSlug || !token) return;
@@ -64,7 +79,47 @@ export default function Integrations() {
             .then(async res => res.ok ? res.json() : Promise.reject(await res.json()))
             .then(data => setNfseForm({ ...defaultNfseForm, ...data }))
             .catch(() => undefined);
+        void loadGoogleStatus();
     }, [tenant?.storeSlug, token]);
+
+    useEffect(() => {
+        const query = new URLSearchParams(window.location.search);
+        if (!query.has('google')) return;
+        setActiveTab('google');
+        if (query.get('google') === 'connected') toast.success('Conta Google autenticada com sucesso!');
+        else toast.error(query.get('message') || 'Não foi possível autenticar a conta Google.');
+        window.history.replaceState({}, '', '/admin/integracoes');
+        void loadGoogleStatus();
+    }, [tenant?.storeSlug]);
+
+    const connectGoogle = async () => {
+        if (!tenant?.storeSlug) return;
+        setLoadingGoogle(true);
+        try {
+            const response = await fetch(`/api/store/${tenant.storeSlug}/google/connect`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Não foi possível iniciar a autenticação.');
+            window.location.assign(data.authUrl);
+        } catch (error: any) {
+            toast.error(error.message);
+            setLoadingGoogle(false);
+        }
+    };
+
+    const disconnectGoogle = async () => {
+        if (!tenant?.storeSlug || !window.confirm('Desconectar esta conta Google? Os arquivos já enviados ao Drive não serão apagados.')) return;
+        setLoadingGoogle(true);
+        try {
+            const response = await fetch(`/api/store/${tenant.storeSlug}/google/disconnect`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Não foi possível desconectar.');
+            toast.success('Conta Google desconectada desta empresa.');
+            await loadGoogleStatus();
+        } catch (error: any) { toast.error(error.message); }
+        finally { setLoadingGoogle(false); }
+    };
 
     const fetchWaStatus = async () => {
         if (!tenant?.storeSlug) return;
@@ -162,33 +217,11 @@ export default function Integrations() {
         } finally { setLoadingTelegram(false); }
     };
 
-    const handleNfseCertificate = (file?: File) => {
-        if (!file) return;
-        if (!/\.(pfx|p12)$/i.test(file.name)) {
-            toast.error('Selecione um certificado A1 no formato .pfx ou .p12.');
-            return;
-        }
-        if (file.size > 2_000_000) {
-            toast.error('O certificado deve ter no máximo 2 MB.');
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-            setNfseCertificate(String(reader.result || '').split(',')[1] || '');
-            setNfseCertificateName(file.name);
-        };
-        reader.readAsDataURL(file);
-    };
-
     const handleSaveNfse = async (event: React.FormEvent) => {
         event.preventDefault();
         if (!tenant?.storeSlug) return;
-    if (nfseForm.enabled && !nfseForm.certificateConfigured && !nfseCertificate) {
-            toast.error('Selecione o certificado digital A1.');
-            return;
-        }
-        if (nfseCertificate && !nfseCertificatePassword) {
-            toast.error('Informe a senha do novo certificado A1.');
+        if (nfseForm.enabled && !nfseForm.certificateConfigured) {
+            toast.error('Cadastre o A1 na aba Certificado digital antes de habilitar a emissão.');
             return;
         }
         setSavingNfse(true);
@@ -196,14 +229,11 @@ export default function Integrations() {
             const response = await fetch(`/api/store/${tenant.storeSlug}/nfse/config`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ ...nfseForm, certificateBase64: nfseCertificate || undefined, certificatePassword: nfseCertificatePassword || undefined }),
+                body: JSON.stringify(nfseForm),
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.message || 'Não foi possível salvar a configuração fiscal.');
             setNfseForm({ ...defaultNfseForm, ...data });
-            setNfseCertificate('');
-            setNfseCertificateName('');
-            setNfseCertificatePassword('');
             toast.success('Configuração da NFS-e em homologação salva.');
         } catch (error: any) {
             toast.error(error.message);
@@ -242,7 +272,7 @@ export default function Integrations() {
                 </p>
             </header>
 
-            <div className="flex space-x-2 border-b border-slate-800/80 mb-8">
+            <div className="flex flex-wrap gap-x-2 border-b border-slate-800/80 mb-8">
                 <button
                     onClick={() => setActiveTab('whatsapp')}
                     className={`pb-4 px-4 text-sm font-medium transition-colors flex items-center space-x-2 ${
@@ -271,6 +301,15 @@ export default function Integrations() {
                     <span>E-mail (SMTP)</span>
                 </button>
                 <button
+                    onClick={() => setActiveTab('google')}
+                    className={`pb-4 px-4 text-sm font-medium transition-colors flex items-center space-x-2 ${
+                        activeTab === 'google' ? 'border-b-2 border-sky-500 text-sky-400' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                >
+                    <Cloud className="w-4 h-4" />
+                    <span>Google</span>
+                </button>
+                <button
                     onClick={() => setActiveTab('mercadopago')}
                     className={`pb-4 px-4 text-sm font-medium transition-colors flex items-center space-x-2 ${
                         activeTab === 'mercadopago' ? 'border-b-2 border-yellow-500 text-yellow-400' : 'text-slate-400 hover:text-slate-200'
@@ -278,6 +317,13 @@ export default function Integrations() {
                 >
                     <CreditCard className="w-4 h-4" />
                     <span>Mercado Pago</span>
+                </button>
+                <button
+                    onClick={() => setActiveTab('certificate')}
+                    className={`pb-4 px-4 text-sm font-medium transition-colors flex items-center space-x-2 ${activeTab === 'certificate' ? 'border-b-2 border-cyan-500 text-cyan-400' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>Certificado digital</span>
                 </button>
                 <button
                     onClick={() => setActiveTab('nfse')}
@@ -291,6 +337,12 @@ export default function Integrations() {
             </div>
 
             <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 md:p-8 shadow-xl">
+                {activeTab === 'certificate' && tenant?.storeSlug && <FiscalCertificate
+                    key={tenant.storeSlug}
+                    slug={tenant.storeSlug}
+                    token={token}
+                    onSaved={status => setNfseForm(current => ({ ...current, ...status, lastConnectionAt: '', lastConnectionStatus: '' }))}
+                />}
                 {activeTab === 'whatsapp' && (
                     <div className="max-w-4xl">
                         <h2 className="text-xl font-semibold text-white mb-6 flex items-center">
@@ -298,7 +350,7 @@ export default function Integrations() {
                             Conexão experimental com WhatsApp
                         </h2>
                         <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-                            Esta conexão por QR Code não usa a API oficial da Meta. Não recomendamos vincular o número principal da empresa nem enviar documentos de clientes por este canal. Para envio automático e seguro de PDFs, configure futuramente a API oficial do WhatsApp Business.
+                            A sessão desta conexão por QR Code é criptografada no servidor e não fica legível nos arquivos da hospedagem. Como o protocolo continua sendo uma integração não oficial, mantenha um número dedicado e controle quais administradores podem conectar ou desconectar a conta.
                         </div>
                         
                         <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50 mb-8">
@@ -478,6 +530,49 @@ export default function Integrations() {
                         </button>
                     </form>
                 )}
+                {activeTab === 'google' && (
+                    <div className="max-w-4xl space-y-6">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div>
+                                <h2 className="text-xl font-semibold text-white flex items-center gap-3"><Cloud className="w-6 h-6 text-sky-400" /> Conta Google da empresa</h2>
+                                <p className="text-sm text-slate-400 mt-2">A empresa autentica a própria conta uma única vez para usar o Google Drive e o Google Agenda.</p>
+                            </div>
+                            <span className={`px-3 py-1.5 rounded-full border text-sm font-semibold ${googleStatus.connected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-slate-700 bg-slate-800 text-slate-400'}`}>
+                                {googleStatus.connected ? 'Conta autenticada' : 'Não conectado'}
+                            </span>
+                        </div>
+
+                        {!googleStatus.serverConfigured ? (
+                            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 text-amber-200">
+                                <p className="font-semibold">Autenticação Google aguardando configuração administrativa</p>
+                                <p className="text-sm mt-1 text-amber-200/80">O administrador da instalação deve cadastrar as credenciais OAuth do sistema na hospedagem. Depois disso, cada empresa poderá usar o botão de autenticação abaixo.</p>
+                            </div>
+                        ) : !googleStatus.connected ? (
+                            <button onClick={connectGoogle} disabled={loadingGoogle} className="inline-flex items-center gap-2 px-6 py-3 bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-900 font-bold rounded-xl shadow-lg">
+                                {loadingGoogle ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Link className="w-5 h-5" />} Autenticar com Google
+                            </button>
+                        ) : (
+                            <>
+                                <div className="grid sm:grid-cols-2 gap-4">
+                                    <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-5 flex items-start gap-4">
+                                        <HardDrive className="w-7 h-7 text-sky-400 shrink-0" />
+                                        <div><h3 className="font-semibold text-white">Google Drive</h3><p className="text-sm text-slate-400 mt-1">Autorizado para backups criptografados desta empresa.</p><p className="text-xs mt-2 text-slate-500">Automático: {googleStatus.driveEnabled ? 'ativado' : 'configure em Backup'}</p></div>
+                                    </div>
+                                    <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-5 flex items-start gap-4">
+                                        <CalendarDays className="w-7 h-7 text-violet-400 shrink-0" />
+                                        <div><h3 className="font-semibold text-white">Google Agenda</h3><p className="text-sm text-slate-400 mt-1">Compromissos, pagamentos e cobranças sincronizados.</p><p className="text-xs mt-2 text-slate-500">Sincronização: {googleStatus.calendarEnabled ? 'ativada' : 'configure na Agenda'}</p></div>
+                                    </div>
+                                </div>
+                                <div className="flex flex-wrap gap-3">
+                                    <button onClick={connectGoogle} disabled={loadingGoogle} className="px-4 py-2.5 rounded-lg border border-sky-500/30 text-sky-300 hover:bg-sky-500/10 flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Reautenticar</button>
+                                    <button onClick={disconnectGoogle} disabled={loadingGoogle} className="px-4 py-2.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 flex items-center gap-2"><Unlink className="w-4 h-4" /> Desconectar conta</button>
+                                </div>
+                                <p className="text-xs text-slate-500">A desconexão interrompe novos backups e sincronizações, mas não apaga arquivos ou eventos que já estejam na conta Google.</p>
+                            </>
+                        )}
+                    </div>
+                )}
+
                 {activeTab === 'mercadopago' && (
                     <MercadoPagoPage />
                 )}
@@ -564,13 +659,8 @@ export default function Integrations() {
                             </div>
                             {nfseForm.certificateSubject && <p className="break-all text-xs text-slate-400">Titular: {nfseForm.certificateSubject}</p>}
                             {nfseForm.certificateValidTo && <p className="text-xs text-slate-400">Válido até: {new Date(nfseForm.certificateValidTo).toLocaleDateString('pt-BR')}</p>}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-cyan-500/40 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-300 hover:bg-cyan-500/10">
-                                    <Upload className="h-4 w-4" /> {nfseCertificateName || (nfseForm.certificateConfigured ? 'Trocar certificado .pfx/.p12' : 'Selecionar certificado .pfx/.p12')}
-                                    <input type="file" accept=".pfx,.p12,application/x-pkcs12" className="hidden" onChange={e => handleNfseCertificate(e.target.files?.[0])} />
-                                </label>
-                                <input type="password" value={nfseCertificatePassword} onChange={e => setNfseCertificatePassword(e.target.value)} placeholder={nfseCertificate ? 'Senha do novo certificado' : 'Senha (somente ao trocar certificado)'} className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-200" />
-                            </div>
+                            <p className="text-sm text-slate-300">Este certificado também é usado na consulta de NF-e para importar produtos.</p>
+                            <button type="button" onClick={() => setActiveTab('certificate')} className="rounded-xl border border-cyan-500/40 px-4 py-3 text-sm text-cyan-300 hover:bg-cyan-500/10">Cadastrar ou substituir certificado</button>
                         </div>
                         <label className="flex items-center gap-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 text-sm text-slate-200">
                             <input type="checkbox" checked={nfseForm.enabled} onChange={e => setNfseForm({ ...nfseForm, enabled: e.target.checked })} className="h-4 w-4 accent-cyan-500" />

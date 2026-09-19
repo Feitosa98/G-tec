@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useData } from '../../hooks/useData';
 import { Plus, Trash2, Edit, CalendarClock, Printer, Search, FileText } from 'lucide-react';
 import { showToast } from '../../utils/toast';
 import { jsPDF } from 'jspdf';
 import { generateProfessionalPDF } from '../../utils/pdfGenerator';
+import { contractBillingRows } from '../../utils/contractBilling';
 
 // Função para gerar o Payload PIX (Copia e Cola e QR Code)
 function generatePixPayload(key, name, city, amount, txid = '***') {
@@ -77,7 +78,18 @@ function generatePixPayload(key, name, city, amount, txid = '***') {
 }
 
 const SubscriptionsManager = () => {
-    const { tenant, registerSale, showConfirm, showAlert } = useData();
+    const { tenant, sales, registerSale, showConfirm, showAlert } = useData();
+    const savingRef = useRef(false);
+    const draftId = useRef(crypto.randomUUID());
+    const [saving, setSaving] = useState(false);
+    const [paymentFilter, setPaymentFilter] = useState('Todos');
+    const [activeTab, setActiveTab] = useState('faturamento');
+    const [billingStatus, setBillingStatus] = useState('Todos');
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
+    const [exporting, setExporting] = useState(false);
+    const [contractFilter, setContractFilter] = useState('Todos');
+    const billingRef = useRef(new Set<string>());
     const [subscriptions, setSubscriptions] = useState([]);
     const [customers, setCustomers] = useState([]);
     const [plans, setPlans] = useState([]);
@@ -188,6 +200,7 @@ const SubscriptionsManager = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        if (savingRef.current) return;
         
         const customer = customers.find(c => c.id === formData.customerId);
         const plan = plans.find(p => p.id === formData.planId);
@@ -205,7 +218,7 @@ const SubscriptionsManager = () => {
         }
 
         const subData = {
-            id: editingSub ? editingSub.id : crypto.randomUUID(),
+            id: editingSub ? editingSub.id : draftId.current,
             customerId: customer.id,
             clientName: customer.name,
             planId: plan.id,
@@ -218,8 +231,13 @@ const SubscriptionsManager = () => {
             createdAt: editingSub ? editingSub.createdAt : new Date().toISOString()
         };
 
+        savingRef.current = true;
+        setSaving(true);
         const success = await saveSubscription(subData);
+        savingRef.current = false;
+        setSaving(false);
         if (success) {
+            draftId.current = crypto.randomUUID();
             showToast.success(`Contrato ${editingSub ? 'atualizado' : 'gerado'} com sucesso!`);
             setIsFormOpen(false);
             setEditingSub(null);
@@ -271,11 +289,13 @@ const SubscriptionsManager = () => {
     };
 
     const handleGenerateInvoice = async (sub) => {
+        if (billingRef.current.has(sub.id)) return;
         if (!tenant.pixKey || !tenant.pixName) {
             showToast.error("Configure sua Chave PIX e Nome nas Configurações da Loja primeiro!");
             return;
         }
 
+        billingRef.current.add(sub.id);
         try {
             const faturaId = `FAT-${new Date().getMonth()+1}${new Date().getFullYear()}-${sub.id.substring(0,4).toUpperCase()}`;
             const txid = `FAT${sub.id.substring(0,10).replace(/[^A-Za-z0-9]/g, '').toUpperCase()}`;
@@ -310,10 +330,15 @@ const SubscriptionsManager = () => {
                 let nextDate = new Date(sub.nextDueDate);
                 if (sub.billingCycle === 'Mensal') nextDate.setMonth(nextDate.getMonth() + 1);
                 else if (sub.billingCycle === 'Trimestral') nextDate.setMonth(nextDate.getMonth() + 3);
+                else if (sub.billingCycle === 'Semestral') nextDate.setMonth(nextDate.getMonth() + 6);
                 else if (sub.billingCycle === 'Anual') nextDate.setFullYear(nextDate.getFullYear() + 1);
                 
                 // Injetar a fatura nas Cobranças
                 const invoiceSale = {
+                    id: `contract-${sub.id}-${sub.nextDueDate.substring(0, 10)}`,
+                    subscriptionId: sub.id,
+                    source: 'subscription',
+                    customerId: sub.customerId,
                     customerName: sub.clientName,
                     userEmail: sub.clientName, // Store clientName as fallback
                     total: sub.customPrice,
@@ -325,10 +350,10 @@ const SubscriptionsManager = () => {
                     items: [{ name: `Mensalidade: ${sub.planName} (${sub.billingCycle})`, price: sub.customPrice, quantity: 1, costPrice: 0 }],
                     status: 'Aprovado' // So it goes straight to valid receivables se for o caso
                 };
-                registerSale(invoiceSale, 'Faturamento Automático');
+                await registerSale(invoiceSale, 'Faturamento Automático');
 
                 const updatedSub = { ...sub, nextDueDate: nextDate.toISOString() };
-                await saveSubscription(updatedSub);
+                if (!await saveSubscription(updatedSub)) throw new Error('Não foi possível atualizar o vencimento.');
                 showToast.success("Fatura gerada e vencimento atualizado!");
             } else {
                 showAlert("Erro", "Não foi possível gerar a fatura.");
@@ -337,6 +362,8 @@ const SubscriptionsManager = () => {
         } catch (err) {
             console.error(err);
             showAlert("Erro", "Erro ao processar fatura.");
+        } finally {
+            billingRef.current.delete(sub.id);
         }
     };
 
@@ -355,10 +382,62 @@ const SubscriptionsManager = () => {
         return { text: 'Em Dia', className: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
     };
 
-    const filteredSubs = subscriptions.filter(s => 
-        s.clientName?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        s.planName?.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    const contractAmounts = (sub) => {
+        const invoices = sales.filter(sale => sale.subscriptionId === sub.id);
+        return invoices.reduce((result, sale) => {
+            const total = Number(sale.total) || 0;
+            const paid = sale.paymentStatus === 'Pago' || sale.status === 'Pago' ? total
+                : sale.paidTotal != null ? Number(sale.paidTotal) || 0
+                : (sale.installments || []).filter(item => item.paid || item.status === 'Pago').reduce((sum, item) => sum + (Number(item.amount ?? item.value) || 0), 0);
+            result.total += total;
+            result.paid += Math.min(total, Math.max(0, paid));
+            result.pending += Math.max(0, total - paid);
+            result.count += 1;
+            return result;
+        }, { total: 0, paid: 0, pending: 0, count: 0 });
+    };
+    const filteredSubs = subscriptions.filter(s => {
+        const amounts = contractAmounts(s);
+        return (s.clientName?.toLowerCase().includes(searchTerm.toLowerCase()) || s.planName?.toLowerCase().includes(searchTerm.toLowerCase()))
+            && (contractFilter === 'Todos' || s.status === contractFilter)
+            && (paymentFilter === 'Todos' || (paymentFilter === 'Pago' && amounts.count > 0 && amounts.pending === 0)
+                || (paymentFilter === 'Pendente' && amounts.pending > 0) || (paymentFilter === 'Sem fatura' && amounts.count === 0));
+    }).sort((a, b) => String(a.clientName).localeCompare(String(b.clientName), 'pt-BR'));
+    const totals = filteredSubs.reduce((result, sub) => {
+        const amount = contractAmounts(sub);
+        return { total: result.total + amount.total, paid: result.paid + amount.paid, pending: result.pending + amount.pending };
+    }, { total: 0, paid: 0, pending: 0 });
+    const currency = value => Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Manaus' }).format(new Date());
+    const billingRows = contractBillingRows(sales, subscriptions, today).filter(row =>
+        `${row.client} ${row.contract}`.toLocaleLowerCase('pt-BR').includes(searchTerm.toLocaleLowerCase('pt-BR'))
+        && (billingStatus === 'Todos' || row.status === billingStatus)
+        && (!dateFrom || row.due >= dateFrom) && (!dateTo || (row.due && row.due <= dateTo))
+    ).sort((a, b) => a.client.localeCompare(b.client, 'pt-BR') || a.due.localeCompare(b.due));
+    const billingTotals = billingRows.reduce((sum, row) => ({ total: sum.total + row.total, paid: sum.paid + row.paid, overdue: sum.overdue + row.overdue, upcoming: sum.upcoming + row.upcoming, undated: sum.undated + row.undated }), { total: 0, paid: 0, overdue: 0, upcoming: 0, undated: 0 });
+    const billingCards = [['Total faturado', billingTotals.total], ['Vencido', billingTotals.overdue], ['A vencer', billingTotals.upcoming], ['Pago', billingTotals.paid]];
+    const exportBillingPDF = async () => {
+        if (exporting) return;
+        if (!billingRows.length) { showToast.info('Nenhuma cobrança encontrada para estes filtros.'); return; }
+        setExporting(true);
+        try {
+            const success = await generateProfessionalPDF({
+                tenant, title: 'RELATÓRIO DE CONTRATOS', documentNumber: today,
+                customerHeading: 'Filtros aplicados:', termsHeading: 'CRITÉRIOS DO RELATÓRIO',
+                customerInfo: [`Busca: ${searchTerm || 'Todos os clientes'}`, `Situação: ${billingStatus}`],
+                documentInfo: [{ label: 'Vencimentos:', value: `${dateFrom || 'Sem início'} a ${dateTo || 'Sem fim'}` }],
+                tableColumns: ['Cliente / Contrato', 'Vencimento', 'Situação', 'Faturado', 'Pago', 'Saldo'],
+                tableRows: billingRows.map(row => [`${row.client}\n${row.contract}`, row.due ? row.due.split('-').reverse().join('/') : 'Não informado', row.status, currency(row.total), currency(row.paid), currency(row.total - row.paid)]),
+                columnStyles: { 0: { cellWidth: 55 }, 1: { cellWidth: 24 }, 2: { cellWidth: 26 }, 3: { cellWidth: 25, halign: 'right' }, 4: { cellWidth: 25, halign: 'right' }, 5: { cellWidth: 25, halign: 'right' } },
+                totalLabel: 'TOTAL:', totalValue: billingTotals.total,
+                summaryRows: billingCards.map(([label, value]) => ({ label, value: currency(value) })),
+                terms: `Valores das cobranças vinculadas aos contratos, conforme os filtros selecionados. Canceladas excluídas. Vencimentos de hoje integram A vencer. Faturas antigas sem vínculo não estão incluídas.${billingTotals.undated ? ` Saldo sem vencimento: ${currency(billingTotals.undated)}.` : ''}`,
+                filename: `Relatorio_Contratos_${today}.pdf`
+            });
+            if (!success) throw new Error('Falha ao gerar PDF');
+        } catch { showToast.error('Não foi possível gerar o relatório. Tente novamente.'); }
+        finally { setExporting(false); }
+    };
 
     return (
         <div className="p-6 md:p-8 space-y-8 animate-fade-in text-slate-100 min-h-screen">
@@ -385,6 +464,7 @@ const SubscriptionsManager = () => {
                     </div>
                     <button 
                         onClick={() => { 
+                            setActiveTab('contratos');
                             setIsFormOpen(!isFormOpen); 
                             setEditingSub(null); 
                             setFormData({ customerId: '', planId: '', customPrice: '', billingCycle: 'Mensal', nextDueDate: '', endDate: '', status: 'Ativo' }); 
@@ -397,6 +477,41 @@ const SubscriptionsManager = () => {
                 </div>
             </div>
 
+            <div className="flex gap-3">
+                <button type="button" onClick={() => setActiveTab('faturamento')} className={`px-4 py-3 rounded-xl ${activeTab === 'faturamento' ? 'bg-blue-600' : 'bg-slate-800'}`}>Faturamento dos contratos</button>
+                <button type="button" onClick={() => setActiveTab('contratos')} className={`px-4 py-3 rounded-xl ${activeTab === 'contratos' ? 'bg-blue-600' : 'bg-slate-800'}`}>Cadastro de contratos</button>
+            </div>
+            {activeTab === 'faturamento' && <div className="space-y-4">
+                <div className="flex flex-wrap gap-3 items-end">
+                    <label>Situação<select className="block bg-slate-900 p-3 rounded-xl" value={billingStatus} onChange={e => setBillingStatus(e.target.value)}>{['Todos', 'Pago', 'Vencido', 'A vencer', 'Sem vencimento'].map(status => <option key={status}>{status}</option>)}</select></label>
+                    <label>Vencimento inicial<input type="date" className="block bg-slate-900 p-3 rounded-xl" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></label>
+                    <label>Vencimento final<input type="date" className="block bg-slate-900 p-3 rounded-xl" value={dateTo} min={dateFrom} onChange={e => setDateTo(e.target.value)} /></label>
+                    <button type="button" disabled={exporting || !billingRows.length || (dateFrom && dateTo && dateFrom > dateTo)} onClick={exportBillingPDF} className="bg-blue-600 disabled:opacity-50 rounded-xl p-3">{exporting ? 'Gerando PDF…' : 'Exportar relatório PDF'}</button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{billingCards.map(([label, value]) => <div key={String(label)} className="rounded-xl border border-slate-700 bg-slate-900 p-4"><div>{label}</div><strong className="text-xl">{currency(value)}</strong></div>)}</div>
+                <p className="text-xs text-slate-400">Totais dos filtros atuais. Faturas antigas sem vínculo não estão incluídas. Vencimentos de hoje entram em A vencer.</p>
+                {billingTotals.undated > 0 && <p className="text-amber-400">Saldo sem vencimento informado: {currency(billingTotals.undated)}</p>}
+                <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead><tr>{['Cliente / Contrato', 'Vencimento', 'Situação', 'Faturado', 'Pago', 'Saldo'].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>
+                    {billingRows.map(row => <tr key={row.id} className="border-t border-slate-800"><td className="p-3">{row.client}<div className="text-slate-400">{row.contract}</div></td><td className="p-3">{row.due ? row.due.split('-').reverse().join('/') : 'Não informado'}</td><td className="p-3">{row.status}</td><td className="p-3">{currency(row.total)}</td><td className="p-3">{currency(row.paid)}</td><td className="p-3">{currency(row.total - row.paid)}</td></tr>)}
+                    {!billingRows.length && <tr><td colSpan={6} className="p-6 text-center">Nenhuma cobrança encontrada.</td></tr>}
+                </tbody></table></div>
+            </div>}
+            {activeTab === 'contratos' && <>
+            <div className="space-y-4">
+                <div className="flex flex-wrap gap-3">
+                    <select aria-label="Filtrar situação do contrato" value={contractFilter} onChange={e => setContractFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-xl p-3">
+                        {['Todos', 'Ativo', 'Suspenso', 'Cancelado'].map(value => <option key={value}>{value}</option>)}
+                    </select>
+                    <select aria-label="Filtrar pagamento" value={paymentFilter} onChange={e => setPaymentFilter(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-xl p-3">
+                        {['Todos', 'Pago', 'Pendente', 'Sem fatura'].map(value => <option key={value}>{value}</option>)}
+                    </select>
+                    <span className="p-3 text-slate-400">{filteredSubs.length} contrato(s) encontrados</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                    {[['Total faturado', totals.total], ['Total pago', totals.paid], ['Total pendente', totals.pending]].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-slate-700 bg-slate-900 p-4"><div className="text-sm text-slate-400">{label}</div><div className="text-xl font-semibold">{currency(value)}</div></div>)}
+                </div>
+                <p className="text-xs text-slate-400">Totais das faturas vinculadas aos contratos filtrados. Faturas antigas sem vínculo não estão incluídas.</p>
+            </div>
             {/* Form Section */}
             {isFormOpen && (
                 <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 md:p-8 shadow-2xl space-y-6 transition-all">
@@ -416,7 +531,7 @@ const SubscriptionsManager = () => {
                                 disabled={!!editingSub}
                             >
                                 <option value="" className="bg-slate-900 text-slate-400">-- Selecione o Cliente --</option>
-                                {customers.map(c => <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">{c.name}</option>)}
+                                {[...customers].sort((a, b) => String(a.name).localeCompare(String(b.name), 'pt-BR')).map(c => <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">{c.name}</option>)}
                             </select>
                         </div>
 
@@ -506,9 +621,10 @@ const SubscriptionsManager = () => {
 
                         <button 
                             type="submit" 
+                            disabled={saving}
                             className="md:col-span-2 mt-2 w-full py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-semibold text-sm rounded-xl shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/35 transition-all duration-200 active:scale-[0.99] cursor-pointer"
                         >
-                            {editingSub ? 'Salvar Alterações' : 'Salvar Contrato'}
+                            {saving ? 'Salvando…' : editingSub ? 'Salvar Alterações' : 'Salvar Contrato'}
                         </button>
                     </form>
                 </div>
@@ -525,13 +641,14 @@ const SubscriptionsManager = () => {
                                 <th className="px-6 py-4">Valor / Ciclo</th>
                                 <th className="px-6 py-4">Próx. Vencimento</th>
                                 <th className="px-6 py-4">Status</th>
+                                <th className="px-6 py-4">Faturas / Recebimentos</th>
                                 <th className="px-6 py-4">Ações</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/50">
                             {filteredSubs.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
+                                    <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
                                         Nenhum contrato encontrado.
                                     </td>
                                 </tr>
@@ -561,6 +678,11 @@ const SubscriptionsManager = () => {
                                                 <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${statusInfo.className}`}>
                                                     {statusInfo.text}
                                                 </span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-xs">
+                                                <div>Faturado: {currency(contractAmounts(sub).total)}</div>
+                                                <div className="text-emerald-400">Pago: {currency(contractAmounts(sub).paid)}</div>
+                                                <div className="text-amber-400">Pendente: {currency(contractAmounts(sub).pending)}</div>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div className="flex items-center gap-3">
@@ -604,6 +726,7 @@ const SubscriptionsManager = () => {
                     </table>
                 </div>
             </div>
+            </>}
         </div>
     );
 };

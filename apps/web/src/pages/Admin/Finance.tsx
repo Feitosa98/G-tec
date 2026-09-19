@@ -1,16 +1,29 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useData } from '../../hooks/useData';
-import { Plus, X, ArrowUpCircle, ArrowDownCircle, DollarSign, TrendingUp } from 'lucide-react';
+import { Plus, X, ArrowUpCircle, ArrowDownCircle, DollarSign, TrendingUp, Check, Search, ReceiptText, CalendarClock, BarChart3, WalletCards } from 'lucide-react';
 import { format } from 'date-fns';
+import { Link } from 'react-router-dom';
 
 const Finance = () => {
-    const { expenses, addExpense, removeExpense, getFinancialSummary } = useData();
+    const { expenses, addExpense, updateExpense, removeExpense, getFinancialSummary } = useData();
     const summary = getFinancialSummary();
 
     const [desc, setDesc] = useState('');
     const [value, setValue] = useState('');
     const [type, setType] = useState('outflow'); // 'inflow' or 'outflow'
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [status, setStatus] = useState('Pago');
+    const [category, setCategory] = useState('Operacional');
+    const [movementFilter, setMovementFilter] = useState('Todos');
+    const [searchTerm, setSearchTerm] = useState('');
+
+    const filteredEntries = useMemo(() => [...expenses]
+        .filter((item: any) => movementFilter === 'Todos'
+            || (movementFilter === 'Entradas' && item.type === 'inflow')
+            || (movementFilter === 'Saídas' && item.type !== 'inflow')
+            || (movementFilter === 'Pendentes' && item.status === 'Pendente'))
+        .filter((item: any) => !searchTerm.trim() || String(item.name || item.description || '').toLowerCase().includes(searchTerm.trim().toLowerCase()))
+        .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()), [expenses, movementFilter, searchTerm]);
 
     const handleAdd = (e: React.FormEvent) => {
         e.preventDefault();
@@ -20,7 +33,11 @@ const Finance = () => {
             name: desc,
             value: Number(value),
             date: new Date(date).toISOString(),
-            type: type
+            dueDate: type === 'outflow' && status === 'Pendente' ? date : undefined,
+            status: type === 'outflow' ? status : 'Pago',
+            paid: type !== 'outflow' || status === 'Pago',
+            type: type,
+            category,
         });
 
         setDesc('');
@@ -37,6 +54,26 @@ const Finance = () => {
                 <p className="text-slate-400 text-sm md:text-base mt-1.5">
                     Gerencie suas entradas e saídas e acompanhe o DRE da sua empresa.
                 </p>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {[
+                    { label: 'Recebido', value: summary.cashReceived, icon: WalletCards, color: 'emerald' },
+                    { label: 'A receber', value: summary.pending, icon: CalendarClock, color: 'amber' },
+                    { label: 'Contas a pagar', value: summary.pendingPayables, icon: ReceiptText, color: 'rose' },
+                    { label: 'Resultado líquido', value: summary.netProfit, icon: BarChart3, color: summary.netProfit >= 0 ? 'cyan' : 'rose' },
+                ].map(card => (
+                    <div key={card.label} className="rounded-2xl border border-slate-800/80 bg-slate-900/55 p-4 shadow-lg">
+                        <div className="flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wider text-slate-400"><span>{card.label}</span><card.icon size={18} className="text-cyan-400" /></div>
+                        <div className="mt-2 text-xl font-extrabold text-white">R$ {Number(card.value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+                    </div>
+                ))}
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+                <Link to="/admin/cobrancas" className="inline-flex items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-300 hover:bg-amber-500/20"><CalendarClock size={17} /> Cobranças e recebimentos</Link>
+                <Link to="/admin/pedidos" className="inline-flex items-center gap-2 rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-semibold text-cyan-300 hover:bg-cyan-500/20"><ReceiptText size={17} /> Vendas e pedidos</Link>
+                <Link to="/admin/relatorios" className="inline-flex items-center gap-2 rounded-xl border border-indigo-500/25 bg-indigo-500/10 px-4 py-2.5 text-sm font-semibold text-indigo-300 hover:bg-indigo-500/20"><BarChart3 size={17} /> Relatórios financeiros</Link>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -72,6 +109,24 @@ const Finance = () => {
                             />
                         </div>
 
+                        {type === 'outflow' && (
+                            <div>
+                                <label className="text-xs font-semibold text-slate-400 mb-1.5 block">Situação do pagamento</label>
+                                <select value={status} onChange={e => setStatus(e.target.value)} className="w-full rounded-xl px-4 py-3 bg-slate-950/60 border border-slate-800 text-slate-200 focus:outline-none focus:border-slate-700 text-sm">
+                                    <option value="Pago">Já pago</option>
+                                    <option value="Pendente">Conta a pagar / criar lembrete na Agenda</option>
+                                </select>
+                                {status === 'Pendente' && <p className="text-xs text-amber-300 mt-1.5">A data acima será o vencimento e aparecerá na Agenda.</p>}
+                            </div>
+                        )}
+
+                        <div>
+                            <label className="text-xs font-semibold text-slate-400 mb-1.5 block">Categoria contábil</label>
+                            <select value={category} onChange={e => setCategory(e.target.value)} className="w-full rounded-xl px-4 py-3 bg-slate-950/60 border border-slate-800 text-slate-200 focus:outline-none focus:border-slate-700 text-sm">
+                                {['Operacional', 'Vendas', 'Serviços', 'Fornecedores', 'Impostos', 'Pessoal', 'Infraestrutura', 'Marketing', 'Outros'].map(option => <option key={option} value={option}>{option}</option>)}
+                            </select>
+                        </div>
+
                         <div className="flex flex-col sm:flex-row gap-3">
                             <input
                                 placeholder="Descrição (Ex: Aluguel, Venda Extra)"
@@ -100,8 +155,14 @@ const Finance = () => {
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">
                         Últimos Lançamentos
                     </h4>
+                    <div className="mb-4 grid grid-cols-1 sm:grid-cols-[1fr_150px] gap-2">
+                        <div className="relative"><Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Buscar lançamento" className="w-full rounded-xl border border-slate-800 bg-slate-950/60 py-2.5 pl-9 pr-3 text-sm text-slate-200" /></div>
+                        <select value={movementFilter} onChange={e => setMovementFilter(e.target.value)} className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2.5 text-sm text-slate-200">
+                            {['Todos', 'Entradas', 'Saídas', 'Pendentes'].map(option => <option key={option}>{option}</option>)}
+                        </select>
+                    </div>
                     <ul className="max-h-[350px] overflow-y-auto pr-2 space-y-2.5 custom-scrollbar">
-                        {[...expenses].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(item => (
+                        {filteredEntries.map(item => (
                             <li 
                                 key={item.id} 
                                 className={`flex items-center justify-between p-3.5 rounded-xl bg-slate-950/40 border border-slate-800/60 hover:border-slate-700/80 transition-all ${
@@ -123,6 +184,8 @@ const Finance = () => {
                                         </p>
                                         <p className="text-xs text-slate-500 mt-0.5">
                                             {format(new Date(item.date), 'dd/MM/yyyy')}
+                                            {item.category && <span className="ml-2 text-slate-500">• {item.category}</span>}
+                                            {item.status === 'Pendente' && <span className="ml-2 text-amber-300">Pendente</span>}
                                         </p>
                                     </div>
                                 </div>
@@ -132,6 +195,11 @@ const Finance = () => {
                                     }`}>
                                         {item.type === 'inflow' ? '+' : '-'} R$ {Number(item.value || item.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                     </span>
+                                    {item.type === 'outflow' && item.status === 'Pendente' && (
+                                        <button onClick={() => updateExpense(item.id, { ...item, status: 'Pago', paid: true, paidAt: new Date().toISOString() })} className="p-1.5 rounded-lg text-emerald-400 hover:bg-emerald-500/10 transition-colors" title="Marcar como pago">
+                                            <Check size={16} />
+                                        </button>
+                                    )}
                                     <button 
                                         onClick={() => removeExpense(item.id)} 
                                         className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
@@ -142,7 +210,7 @@ const Finance = () => {
                                 </div>
                             </li>
                         ))}
-                        {expenses.length === 0 && (
+                        {filteredEntries.length === 0 && (
                             <div className="p-8 text-center text-slate-500 bg-slate-950/30 rounded-xl border border-slate-800/50 border-dashed">
                                 <p className="text-sm">Nenhum lançamento registrado.</p>
                             </div>

@@ -8,19 +8,28 @@ export const getStoreSlug = () => useAuthStore.getState().user?.storeSlug
 export const storeQueryKey = (resource: string) => ['store', getStoreSlug(), resource] as const;
 
 export const storeRequest = async (path: string, options: RequestInit = {}) => {
-    const token = useAuthStore.getState().user?.token;
     const slug = getStoreSlug();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    if (options.signal) options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    let response: Response;
+    try {
+        response = await fetch(`/api/store/${slug}/${path}`, {
+            ...options,
+            signal: controller.signal,
+            headers: {
+                'Content-Type': 'application/json',
+                ...options.headers
+            }
+        });
+    } catch (error: any) {
+        if (error?.name === 'AbortError') throw new Error('O servidor demorou demais para responder. Tente novamente.');
+        throw error;
+    } finally {
+        window.clearTimeout(timeout);
+    }
     
-    const response = await fetch(`/api/store/${slug}/${path}`, {
-        ...options,
-        headers: { 
-            'Content-Type': 'application/json', 
-            ...(token ? { Authorization: `Bearer ${token}` } : {}), 
-            ...options.headers 
-        }
-    });
-    
-    if (response.status === 401 && token) {
+    if (response.status === 401) {
         useAuthStore.getState().logout();
         const loginUrl = '/';
         window.location.replace(loginUrl);

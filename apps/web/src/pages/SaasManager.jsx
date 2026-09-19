@@ -10,7 +10,7 @@ const emptyForm = {
 };
 
 const SaasManager = () => {
-    const [token, setToken] = useState(() => sessionStorage.getItem('gtec-saas-token') || '');
+    const [authenticated, setAuthenticated] = useState(null);
     const [credentials, setCredentials] = useState({ username: '', password: '' });
     const [tenants, setTenants] = useState([]);
     const [form, setForm] = useState(emptyForm);
@@ -22,7 +22,7 @@ const SaasManager = () => {
     const apiRequest = async (path, options = {}) => {
         const response = await fetch(path, {
             ...options,
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...options.headers }
+            headers: { 'Content-Type': 'application/json', ...options.headers }
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.message || 'Não foi possível concluir a operação.');
@@ -30,17 +30,22 @@ const SaasManager = () => {
     };
 
     const loadTenants = async () => {
-        if (!token) return;
+        if (!authenticated) return;
         try {
             setTenants(await apiRequest('/api/saas/tenants'));
         } catch (error) {
-            sessionStorage.removeItem('gtec-saas-token');
-            setToken('');
+            setAuthenticated(false);
             showToast.error(error.message);
         }
     };
 
-    useEffect(() => { loadTenants(); }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => {
+        fetch('/api/saas/session')
+            .then(response => setAuthenticated(response.ok))
+            .catch(() => setAuthenticated(false));
+    }, []);
+
+    useEffect(() => { if (authenticated) loadTenants(); }, [authenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleLogin = async (event) => {
         event.preventDefault();
@@ -51,8 +56,7 @@ const SaasManager = () => {
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.message || 'Credenciais inválidas.');
-            sessionStorage.setItem('gtec-saas-token', data.token);
-            setToken(data.token);
+            setAuthenticated(true);
         } catch (error) {
             showToast.error(error.message);
         } finally {
@@ -132,7 +136,11 @@ const SaasManager = () => {
         } catch (error) { showToast.error(error.message); }
     };
 
-    if (!token) {
+    if (authenticated === null) {
+        return <div style={pageStyle}><p style={mutedStyle}>Verificando acesso seguro...</p></div>;
+    }
+
+    if (!authenticated) {
         return (
             <div style={pageStyle}>
                 <form onSubmit={handleLogin} style={{ ...panelStyle, width: 'min(420px, 92vw)', textAlign: 'center' }}>
@@ -155,7 +163,7 @@ const SaasManager = () => {
                     <h1><Store size={28} style={{ verticalAlign: 'middle', marginRight: '0.5rem' }} />Gestão de lojas</h1>
                     <p style={mutedStyle}>Cada loja cadastrada recebe um banco PostgreSQL exclusivo.</p>
                 </div>
-                <button className="btn-outline" onClick={() => { sessionStorage.removeItem('gtec-saas-token'); setToken(''); }}><LogOut size={17} /> Sair</button>
+                <button className="btn-outline" onClick={async () => { await fetch('/api/saas/logout', { method: 'POST' }).catch(() => undefined); setAuthenticated(false); }}><LogOut size={17} /> Sair</button>
             </header>
 
             <main style={{ maxWidth: '1280px', margin: '0 auto' }}>

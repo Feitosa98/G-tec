@@ -82,13 +82,17 @@ const Receivables = () => {
         setPaymentModalOpen(true);
     };
 
-    const confirmPayment = () => {
+    const confirmPayment = async () => {
         if (!selectedReceivable) return;
         
         const finalValue = selectedReceivable.value + Number(paymentDetails.juros) + Number(paymentDetails.multa) - Number(paymentDetails.desconto);
         
         // Passando metodo de pagamento, valor final e desconto para o contexto
-        markInstallmentPaid(selectedReceivable.saleId, selectedReceivable.id, paymentDetails.metodo, finalValue, Number(paymentDetails.desconto));
+        const updated = await markInstallmentPaid(selectedReceivable.saleId, selectedReceivable.id, paymentDetails.metodo, finalValue, Number(paymentDetails.desconto));
+        if (!updated) {
+            showToast.error('Não foi possível dar baixa nesta parcela.');
+            return;
+        }
         
         showToast.success(`Parcela ${selectedReceivable.number}/${selectedReceivable.totalInstallments} marcada como paga.`);
         setPaymentModalOpen(false);
@@ -359,9 +363,8 @@ const Receivables = () => {
                                 >
                                     <option value="Dinheiro" className="bg-slate-900 text-slate-100">Dinheiro</option>
                                     <option value="PIX" className="bg-slate-900 text-slate-100">PIX</option>
-                                    <option value="Cartão de Crédito" className="bg-slate-900 text-slate-100">Cartão de Crédito</option>
-                                    <option value="Cartão de Débito" className="bg-slate-900 text-slate-100">Cartão de Débito</option>
-                                    <option value="Transferência" className="bg-slate-900 text-slate-100">Transferência</option>
+                                    <option value="Crédito" className="bg-slate-900 text-slate-100">Crédito</option>
+                                    <option value="Débito" className="bg-slate-900 text-slate-100">Débito</option>
                                 </select>
                             </div>
                         </div>

@@ -43,7 +43,7 @@ export default function PermissionsManager() {
         e.preventDefault();
         if (!form.name || !form.email) { toast.error('Nome e e-mail são obrigatórios'); return; }
         const payload = { ...form, id: editing?.id || crypto.randomUUID(), updatedAt: new Date().toISOString() };
-        if (!editing && form.password.length < 8) { toast.error('A senha deve ter pelo menos 8 caracteres'); return; }
+        if ((!editing || form.password) && form.password.length < 8) { toast.error('A senha deve ter pelo menos 8 caracteres'); return; }
         const response = await fetch(`/api/store/${tenant.storeSlug}/users`, { method: 'POST', headers, body: JSON.stringify(payload) });
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));

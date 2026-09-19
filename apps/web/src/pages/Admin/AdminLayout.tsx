@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Package, DollarSign, LogOut, Monitor, CalendarClock, Palette, Wrench, ClipboardList, Users, Repeat, MessageSquare, ArchiveX, Building2, CalendarDays, FileBarChart2, Shield, ScrollText, HardDrive, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Package, DollarSign, LogOut, Monitor, CalendarClock, Palette, ClipboardList, Repeat, MessageSquare, ArchiveX, CalendarDays, FileBarChart2, Shield, ScrollText, HardDrive, Menu, X, ContactRound } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { useData } from '../../hooks/useData';
 
@@ -33,16 +33,13 @@ const AdminLayout = () => {
 
     const navItems = [
         { path: '/admin', label: 'Painel', icon: LayoutDashboard, roles: ['admin', 'gerente'] },
-        { path: '/admin/clientes', label: 'Clientes', icon: Users, roles: staffRoles },
+        { path: '/admin/cadastros', label: 'Cadastros', icon: ContactRound, roles: staffRoles },
         { path: '/admin/ordens-servico', label: 'Ordens de Serviço', icon: ClipboardList, roles: ['admin', 'gerente', 'tecnico'] },
         { path: '/admin/pedidos', label: 'Pedidos Loja', icon: Package, roles: ['admin', 'gerente', 'vendedor'] },
         { path: '/admin/cobrancas', label: 'Cobranças', icon: CalendarClock, roles: ['admin', 'gerente'] },
         { path: '/admin/assinaturas', label: 'Contratos / Planos', icon: Repeat, roles: ['admin'] },
-        { path: '/admin/produtos', label: 'Produtos', icon: Monitor, roles: ['admin', 'gerente', 'vendedor'] },
         { path: '/admin/estoque', label: 'Estoque', icon: ArchiveX, roles: ['admin', 'gerente', 'vendedor'] },
-        { path: '/admin/servicos', label: 'Serviços', icon: Wrench, roles: ['admin', 'gerente', 'tecnico'] },
         { path: '/admin/financeiro', label: 'Financeiro', icon: DollarSign, roles: ['admin'] },
-        { path: '/admin/fornecedores', label: 'Fornecedores', icon: Building2, roles: ['admin', 'gerente'] },
         { path: '/admin/agenda', label: 'Agenda', icon: CalendarDays, roles: ['admin', 'gerente', 'tecnico'] },
         { path: '/admin/relatorios', label: 'Relatórios', icon: FileBarChart2, roles: ['admin', 'gerente'] },
         { path: '/admin/permissoes', label: 'Permissões', icon: Shield, roles: ['admin'] },
