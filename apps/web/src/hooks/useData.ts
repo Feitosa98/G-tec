@@ -145,19 +145,28 @@ export const useData = () => {
         },
 
         // Subscriptions
-        markInstallmentPaid: async (saleId: string, installmentId: string, method?: string, finalValue?: number, discount?: number) => {
+        attachInstallmentReceipt: async (saleId: string, installmentId: string, receiptPdf: any) => {
+            const sale = salesData?.find((item: any) => item.id === saleId);
+            if (!sale) return false;
+            const parts = reconcileInstallments(sale);
+            if (!parts.some((part: any) => part.id === installmentId && part.paid)) return false;
+            await updateSaleMut({ ...sale, installments: parts.map((part: any) => part.id === installmentId ? { ...part, receiptPdf } : part) });
+            return true;
+        },
+        markInstallmentPaid: async (saleId: string, installmentId: string, method?: string, finalValue?: number, discount?: number, receiptPdf?: any) => {
             const sale = salesData?.find((item: any) => item.id === saleId);
             if (sale) {
                 const paidAt = new Date().toISOString();
                 const currentInstallments = reconcileInstallments(sale);
                 const selected = currentInstallments.find((item: any) => item.id === installmentId);
                 if (!selected || selected.paid) return false;
+                if (!Number.isFinite(Number(finalValue ?? selected.balanceDue)) || Number(finalValue ?? selected.balanceDue) < 0) return false;
                 const receipt = { id: crypto.randomUUID(), installmentId, amount: Number(finalValue ?? selected.balanceDue ?? selected.value), principalAmount: selected.balanceDue ?? selected.value, method: method || 'Dinheiro', note: 'Recebimento de parcela', paidAt };
                 const priorPayments = sale.payments?.length ? sale.payments : Number(sale.paidTotal) > 0
                     ? [{ id: crypto.randomUUID(), amount: Number(sale.paidTotal), method: 'Saldo recebido anteriormente', paidAt }] : [];
                 const salePayments = [...priorPayments, receipt];
                 const newInstallments = currentInstallments.map((installment: any) => installment.id === installmentId
-                    ? { ...installment, status: 'Pago', paid: true, allocatedByReceipts: false, paidTotal: installment.value, balanceDue: 0, paidAt, paymentMethod: method, paidValue: finalValue, discount }
+                    ? { ...installment, status: 'Pago', paid: true, allocatedByReceipts: false, paidTotal: installment.value, balanceDue: 0, paidAt, paymentMethod: method, paidValue: finalValue, discount, ...(receiptPdf ? { receiptPdf } : {}) }
                     : installment);
                 const allPaid = newInstallments.length > 0 && newInstallments.every((installment: any) => installment.status === 'Pago' || installment.paid);
                 const paidTotal = newInstallments.filter((installment: any) => installment.status === 'Pago' || installment.paid)

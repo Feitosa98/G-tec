@@ -29,3 +29,25 @@ test('settling the remaining balance of a partial installment preserves earlier 
     assert.deepEqual(result.slice(0, 4).map(p => p.status), ['Pago', 'Pago', 'Pago', 'Pago']);
     assert.equal(result[4].balanceDue, 475);
 });
+
+test('fatura mensal antiga ganha parcela estável sem perder recebimentos', () => {
+    const invoice = { id: 'contract-c-2026-10-06', subscriptionId: 'c', total: 300, paidTotal: 100, paymentTerms: { firstDueDate: '2026-10-06' } };
+    const [part] = reconcileInstallments(invoice);
+    assert.equal(part.id, 'monthly-contract-c-2026-10-06');
+    assert.equal(part.dueDate, '2026-10-06');
+    assert.equal(part.paidTotal, 100);
+    assert.equal(part.balanceDue, 200);
+    assert.deepEqual(reconcileInstallments({ ...invoice, installments: [part] }), [part]);
+});
+
+test('mensalidade antiga quitada permanece paga e preserva o recibo salvo', () => {
+    const invoice = { id: 's', subscriptionId: 'c', total: 300, paymentStatus: 'Pago' };
+    const [part] = reconcileInstallments(invoice);
+    assert.equal(part.paid, true);
+    const receiptPdf = { name: 'recibo.pdf', base64: 'JVBERi0=' };
+    assert.deepEqual(reconcileInstallments({ ...invoice, installments: [{ ...part, receiptPdf }] })[0].receiptPdf, receiptPdf);
+});
+
+test('venda comum sem parcelas não é convertida em mensalidade', () => {
+    assert.deepEqual(reconcileInstallments({ id: 's', total: 100 }), []);
+});

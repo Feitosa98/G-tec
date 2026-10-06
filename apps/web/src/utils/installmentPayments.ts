@@ -2,7 +2,11 @@ const cents = (value: any) => Math.max(0, Math.round((Number(value) || 0) * 100)
 
 // Reconcile general receipts with installments without counting targeted receipts twice.
 export function reconcileInstallments(record: any) {
-    const parts = record.installments || [];
+    const parts = record.installments?.length ? record.installments : record.subscriptionId ? [{
+        id: `monthly-${record.id}`, number: 1, amount: record.total, value: record.total,
+        dueDate: String(record.paymentTerms?.firstDueDate || record.dueDate || '').slice(0, 10),
+        status: 'Pendente',
+    }] : [];
     const payments = record.payments || [];
     const explicit = parts.map((part: any) => part.allocatedByReceipts && Array.isArray(record.payments)
         ? 0 : part.paid || ['Pago', 'Paga'].includes(part.status)

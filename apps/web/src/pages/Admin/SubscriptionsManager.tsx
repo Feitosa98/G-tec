@@ -5,6 +5,7 @@ import { showToast } from '../../utils/toast';
 import { jsPDF } from 'jspdf';
 import { generateProfessionalPDF } from '../../utils/pdfGenerator';
 import { contractBillingRows } from '../../utils/contractBilling';
+import { downloadReceiptPdf } from '../../utils/receiptPdf';
 
 // Função para gerar o Payload PIX (Copia e Cola e QR Code)
 function generatePixPayload(key, name, city, amount, txid = '***') {
@@ -78,7 +79,54 @@ function generatePixPayload(key, name, city, amount, txid = '***') {
 }
 
 const SubscriptionsManager = () => {
-    const { tenant, sales, registerSale, showConfirm, showAlert } = useData();
+    const { tenant, sales, registerSale, markInstallmentPaid, attachInstallmentReceipt, showConfirm, showAlert } = useData();
+    const [receiptRow, setReceiptRow] = useState<any>(null);
+    const [receiptMethod, setReceiptMethod] = useState('PIX');
+    const [receiving, setReceiving] = useState(false);
+    const receivingRef = useRef(false);
+    const makeReceipt = async (row: any, method: string, paidAt: string) => {
+        const date = paidAt ? new Date(paidAt).toLocaleDateString('pt-BR') : 'Não informada';
+        const result = await generateProfessionalPDF({
+            tenant, title: 'RECIBO', documentNumber: String(row.saleId).slice(-20), customerHeading: 'Recebido de:',
+            customerInfo: [row.client, `Contrato: ${row.contract}`],
+            documentInfo: [{ label: 'Data:', value: date }, { label: 'Forma:', value: method || 'Não informada' }],
+            tableColumns: ['Descrição', 'Valor recebido'],
+            tableRows: [[`Mensalidade - ${row.contract}\nVencimento: ${row.due ? row.due.split('-').reverse().join('/') : 'Não informado'}`, currency(row.total)]],
+            columnStyles: { 0: { cellWidth: 130 }, 1: { cellWidth: 50, halign: 'right' } },
+            totalLabel: 'TOTAL RECEBIDO:', totalValue: row.total,
+            termsHeading: 'COMPROVANTE DE RECEBIMENTO',
+            terms: `Declaramos o recebimento de ${currency(row.total)} de ${row.client}, referente à mensalidade do contrato ${row.contract}. Mensalidade quitada. Este recibo não substitui uma nota fiscal.`,
+            filename: `Recibo_Mensalidade_${String(row.saleId).replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`, returnBase64: true,
+        });
+        if (!result?.success) throw new Error('Não foi possível gerar o recibo PDF.');
+        return { name: result.filename, base64: result.base64, generatedAt: new Date().toISOString() };
+    };
+    const receiveMonthly = async () => {
+        if (!receiptRow || receivingRef.current) return;
+        receivingRef.current = true;
+        setReceiving(true);
+        try {
+            const pdf = await makeReceipt(receiptRow, receiptMethod, new Date().toISOString());
+            if (!await markInstallmentPaid(receiptRow.saleId, receiptRow.installmentId, receiptMethod, receiptRow.total - receiptRow.paid, 0, pdf)) throw new Error('Não foi possível receber a mensalidade. Atualize a página e confira a situação.');
+            showToast.success('Mensalidade recebida. Recibo PDF disponível.');
+            setReceiptRow(null);
+        } catch (error: any) { showToast.error(error.message || 'Falha ao receber mensalidade.'); }
+        finally { receivingRef.current = false; setReceiving(false); }
+    };
+    const downloadMonthlyReceipt = async (row: any) => {
+        if (receivingRef.current) return;
+        receivingRef.current = true;
+        setReceiving(true);
+        try {
+            let pdf = row.receiptPdf;
+            if (!pdf) {
+                pdf = await makeReceipt(row, row.paymentMethod, row.paidAt);
+                if (!await attachInstallmentReceipt(row.saleId, row.installmentId, pdf)) throw new Error('Não foi possível salvar o recibo.');
+            }
+            downloadReceiptPdf(pdf);
+        } catch (error: any) { showToast.error(error.message || 'Falha ao gerar recibo.'); }
+        finally { receivingRef.current = false; setReceiving(false); }
+    };
     const savingRef = useRef(false);
     const draftId = useRef(crypto.randomUUID());
     const [saving, setSaving] = useState(false);
@@ -341,7 +389,11 @@ const SubscriptionsManager = () => {
                     customerId: sub.customerId,
                     customerName: sub.clientName,
                     userEmail: sub.clientName, // Store clientName as fallback
-                    total: sub.customPrice,
+                    total: Number(sub.customPrice ?? sub.value ?? 0),
+                    customerPhone: customers.find(customer => customer.id === sub.customerId)?.phone || '',
+                    customerEmail: customers.find(customer => customer.id === sub.customerId)?.email || '',
+                    paymentStatus: 'Pendente',
+                    installments: [{ id: `monthly-contract-${sub.id}-${sub.nextDueDate.substring(0, 10)}`, number: 1, amount: Number(sub.customPrice ?? sub.value ?? 0), value: Number(sub.customPrice ?? sub.value ?? 0), dueDate: sub.nextDueDate.substring(0, 10), status: 'Pendente', paid: false }],
                     paymentTerms: {
                         type: 'terms',
                         installments: 1,
@@ -491,11 +543,12 @@ const SubscriptionsManager = () => {
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{billingCards.map(([label, value]) => <div key={String(label)} className="rounded-xl border border-slate-700 bg-slate-900 p-4"><div>{label}</div><strong className="text-xl">{currency(value)}</strong></div>)}</div>
                 <p className="text-xs text-slate-400">Totais dos filtros atuais. Faturas antigas sem vínculo não estão incluídas. Vencimentos de hoje entram em A vencer.</p>
                 {billingTotals.undated > 0 && <p className="text-amber-400">Saldo sem vencimento informado: {currency(billingTotals.undated)}</p>}
-                <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead><tr>{['Cliente / Contrato', 'Vencimento', 'Situação', 'Faturado', 'Pago', 'Saldo'].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>
-                    {billingRows.map(row => <tr key={row.id} className="border-t border-slate-800"><td className="p-3">{row.client}<div className="text-slate-400">{row.contract}</div></td><td className="p-3">{row.due ? row.due.split('-').reverse().join('/') : 'Não informado'}</td><td className="p-3">{row.status}</td><td className="p-3">{currency(row.total)}</td><td className="p-3">{currency(row.paid)}</td><td className="p-3">{currency(row.total - row.paid)}</td></tr>)}
-                    {!billingRows.length && <tr><td colSpan={6} className="p-6 text-center">Nenhuma cobrança encontrada.</td></tr>}
+                <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead><tr>{['Cliente / Contrato', 'Vencimento', 'Situação', 'Faturado', 'Pago', 'Saldo', 'Ações'].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>
+                    {billingRows.map(row => <tr key={row.id} className="border-t border-slate-800"><td className="p-3">{row.client}<div className="text-slate-400">{row.contract}</div></td><td className="p-3">{row.due ? row.due.split('-').reverse().join('/') : 'Não informado'}</td><td className="p-3">{row.status}</td><td className="p-3">{currency(row.total)}</td><td className="p-3">{currency(row.paid)}</td><td className="p-3">{currency(row.total - row.paid)}</td><td className="p-3">{row.status === 'Pago' ? <button disabled={receiving} onClick={() => downloadMonthlyReceipt(row)} className="bg-blue-600 rounded-lg px-3 py-2 disabled:opacity-50">Recibo PDF</button> : <button disabled={receiving} onClick={() => { setReceiptRow(row); setReceiptMethod('PIX'); }} className="bg-emerald-600 rounded-lg px-3 py-2 disabled:opacity-50">Receber mensalidade</button>}</td></tr>)}
+                    {!billingRows.length && <tr><td colSpan={7} className="p-6 text-center">Nenhuma cobrança encontrada.</td></tr>}
                 </tbody></table></div>
             </div>}
+            {receiptRow && <div role="dialog" aria-modal="true" aria-label="Receber mensalidade" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-700 p-6 space-y-4"><h2 className="text-xl font-bold">Receber mensalidade</h2><p>{receiptRow.client} · {receiptRow.contract}</p><p>Saldo a receber: <strong>{currency(receiptRow.total - receiptRow.paid)}</strong></p><label className="block">Forma de pagamento<select value={receiptMethod} disabled={receiving} onChange={e => setReceiptMethod(e.target.value)} className="block w-full bg-slate-800 rounded-lg p-3 mt-2">{['PIX', 'Dinheiro', 'Transferência', 'Crédito', 'Débito', 'Boleto'].map(method => <option key={method}>{method}</option>)}</select></label><p className="text-sm text-slate-400">O recibo PDF será salvo junto à mensalidade e ficará disponível para download.</p><div className="flex justify-end gap-3"><button disabled={receiving} onClick={() => setReceiptRow(null)} className="px-3 py-2">Cancelar</button><button disabled={receiving} onClick={receiveMonthly} className="bg-emerald-600 rounded-lg px-3 py-2 disabled:opacity-50">{receiving ? 'Salvando…' : 'Confirmar recebimento'}</button></div></div></div>}
             {activeTab === 'contratos' && <>
             <div className="space-y-4">
                 <div className="flex flex-wrap gap-3">
