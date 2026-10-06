@@ -1,3 +1,5 @@
+import { reconcileInstallments } from '../../web/src/utils/installmentPayments.js';
+
 const validDate = (value: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').slice(0, 10));
 
 const dateOnly = (value: unknown) => String(value || '').slice(0, 10);
@@ -8,11 +10,11 @@ const isPaid = (record: any) => record?.paid === true || ['pago', 'paga', 'paid'
 export const buildFinancialAgendaEvents = (sales: any[] = [], expenses: any[] = []) => {
     const receivables = sales.flatMap((sale: any) => {
         if (isPaid(sale)) return [];
-        const installments = Array.isArray(sale?.installments) ? sale.installments : [];
+        const installments = reconcileInstallments(sale);
         return installments.flatMap((installment: any, index: number) => {
             const date = dateOnly(installment?.dueDate);
             if (!validDate(date) || isPaid(installment)) return [];
-            const amount = Number(installment?.value ?? installment?.amount ?? 0);
+            const amount = Number(installment?.balanceDue ?? installment?.value ?? installment?.amount ?? 0);
             const number = Number(installment?.number || installment?.installmentNumber || index + 1);
             const customer = String(sale?.customerName || sale?.clientName || 'Cliente');
             const overdue = date < new Date().toISOString().slice(0, 10);

@@ -7,17 +7,19 @@ import { useNotify } from '../../hooks/useNotify';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
 
 const currency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+const dueDateValue = (value: string) => new Date(`${String(value).slice(0, 10)}T12:00:00`);
 
 const Receivables = () => {
-    const { sales, markInstallmentPaid, showConfirm, showAlert } = useData();
+    const { sales, customers, markInstallmentPaid, showConfirm, showAlert } = useData();
     const { notify } = useNotify();
     const { generatePaymentLink, copyLinkToClipboard } = useMercadoPago();
     const [mpLinks, setMpLinks] = useState<Record<string, string>>({});
 
     const handleChargeWhatsApp = (receivable: any) => {
         const phone = receivable.customerPhone || receivable.clientPhone || '';
-        const dueDate = receivable.dueDate ? format(new Date(receivable.dueDate), 'dd/MM/yyyy') : 'a combinar';
-        const message = `💰 Olá, ${receivable.customerName || 'Cliente'}! Gostaríamos de lembrá-lo(a) que há uma cobrança em aberto no valor de ${currency.format(receivable.amount || 0)}, com vencimento em ${dueDate}.\n\nPor favor, entre em contato para regularizar. Obrigado! 🙏`;
+        const dueDate = receivable.dueDate ? format(dueDateValue(receivable.dueDate), 'dd/MM/yyyy') : 'a combinar';
+        if (!phone) { showToast.error('Cadastre o telefone do cliente para enviar a cobrança.'); return; }
+        const message = `💰 Olá, ${receivable.customerName || 'Cliente'}! Gostaríamos de lembrá-lo(a) da parcela ${receivable.number}/${receivable.totalInstallments} do pedido #${receivable.saleId}, em aberto no valor de ${currency.format(receivable.balanceDue ?? receivable.value ?? 0)}, com vencimento em ${dueDate}.\n\nPor favor, entre em contato para regularizar. Obrigado! 🙏`;
         notify({ channel: 'whatsapp', to: phone, message });
     };
     const [statusFilter, setStatusFilter] = useState('Todos');
@@ -33,20 +35,20 @@ const Receivables = () => {
         observacao: ''
     });
 
-    const receivables = useMemo(() => sales.flatMap(sale =>
-        (sale.installments || []).map(installment => {
-            const overdue = installment.status !== 'Pago' && new Date(installment.dueDate) < new Date();
+    const receivables = useMemo(() => sales.filter(sale => !['Cancelado', 'Cancelada'].includes(sale.status)).flatMap(sale =>
+        (sale.installments || []).filter(installment => !['Cancelado', 'Cancelada'].includes(installment.status)).map(installment => {
+            const overdue = installment.status !== 'Pago' && String(installment.dueDate).slice(0, 10) < format(new Date(), 'yyyy-MM-dd');
             return {
                 ...installment,
                 displayStatus: overdue ? 'Vencido' : installment.status,
                 saleId: sale.id,
                 customerName: sale.customerName || 'Cliente',
                 customerEmail: sale.userEmail || '',
-                customerPhone: sale.customerPhone || '',
+                customerPhone: sale.customerPhone || customers.find((customer: any) => customer.id === sale.customerId)?.phone || customers.find((customer: any) => customer.id === sale.customerId)?.whatsapp || '',
                 totalInstallments: sale.installments.length
             };
         })
-    ).sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()), [sales]);
+    ).sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()), [sales, customers]);
 
     const filteredReceivables = receivables.filter(receivable => {
         const matchesStatus = statusFilter === 'Todos' || receivable.displayStatus === statusFilter;
@@ -59,9 +61,9 @@ const Receivables = () => {
     });
 
     const totals = receivables.reduce((summary, receivable) => {
-        if (receivable.displayStatus === 'Pago') summary.paid += receivable.value;
-        else if (receivable.displayStatus === 'Vencido') summary.overdue += receivable.value;
-        else summary.pending += receivable.value;
+        summary.paid += Number(receivable.paidTotal || 0);
+        if (receivable.displayStatus === 'Vencido') summary.overdue += Number(receivable.balanceDue ?? receivable.value);
+        else if (receivable.displayStatus !== 'Pago') summary.pending += Number(receivable.balanceDue ?? receivable.value);
         return summary;
     }, { pending: 0, overdue: 0, paid: 0 });
 
@@ -72,8 +74,8 @@ const Receivables = () => {
         if (receivable.displayStatus === 'Vencido') {
             const daysOverdue = Math.floor((new Date().getTime() - new Date(receivable.dueDate).getTime()) / (1000 * 60 * 60 * 24));
             if (daysOverdue > 0) {
-                defaultMulta = receivable.value * 0.02; // 2% multa
-                defaultJuros = receivable.value * 0.01 * (daysOverdue / 30); // 1% ao mês
+                defaultMulta = (receivable.balanceDue ?? receivable.value) * 0.02; // 2% multa
+                defaultJuros = (receivable.balanceDue ?? receivable.value) * 0.01 * (daysOverdue / 30); // 1% ao mês
             }
         }
         
@@ -85,7 +87,7 @@ const Receivables = () => {
     const confirmPayment = async () => {
         if (!selectedReceivable) return;
         
-        const finalValue = selectedReceivable.value + Number(paymentDetails.juros) + Number(paymentDetails.multa) - Number(paymentDetails.desconto);
+        const finalValue = (selectedReceivable.balanceDue ?? selectedReceivable.value) + Number(paymentDetails.juros) + Number(paymentDetails.multa) - Number(paymentDetails.desconto);
         
         // Passando metodo de pagamento, valor final e desconto para o contexto
         const updated = await markInstallmentPaid(selectedReceivable.saleId, selectedReceivable.id, paymentDetails.metodo, finalValue, Number(paymentDetails.desconto));
@@ -100,7 +102,7 @@ const Receivables = () => {
     };
 
     const handleMPPayment = async (item: any) => {
-        const amount = Number(item.amount || item.value || item.total || 0);
+        const amount = Number(item.balanceDue ?? item.value ?? item.amount ?? 0);
         const result = await generatePaymentLink({
             items: [{ title: `Cobrança - ${item.customerName || item.clientName || 'Cliente'}`, quantity: 1, unit_price: amount }],
             payerName: item.customerName || item.clientName,
@@ -174,7 +176,7 @@ const Receivables = () => {
                         onChange={event => setStatusFilter(event.target.value)} 
                         className="w-full bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 transition-all duration-200 cursor-pointer"
                     >
-                        {['Todos', 'Pendente', 'Vencido', 'Pago'].map(status => (
+                        {['Todos', 'Pendente', 'Parcial', 'Vencido', 'Pago'].map(status => (
                             <option key={status} value={status} className="bg-slate-900 text-slate-100">
                                 {status}
                             </option>
@@ -218,7 +220,7 @@ const Receivables = () => {
                                         {receivable.number}/{receivable.totalInstallments}
                                     </td>
                                     <td className="px-6 py-4 text-slate-300">
-                                        {format(new Date(receivable.dueDate), 'dd/MM/yyyy')}
+                                        {receivable.dueDate ? format(dueDateValue(receivable.dueDate), 'dd/MM/yyyy') : 'A combinar'}
                                     </td>
                                     <td className="px-6 py-4 font-semibold text-white tracking-tight">
                                         {currency.format(receivable.value)}
@@ -314,7 +316,7 @@ const Receivables = () => {
                             </div>
                             <div className="flex justify-between items-center">
                                 <span className="text-slate-400 text-xs uppercase tracking-wider font-medium">Vencimento:</span>
-                                <strong className="text-slate-100 font-semibold">{format(new Date(selectedReceivable.dueDate), 'dd/MM/yyyy')}</strong>
+                                <strong className="text-slate-100 font-semibold">{selectedReceivable.dueDate ? format(dueDateValue(selectedReceivable.dueDate), 'dd/MM/yyyy') : 'A combinar'}</strong>
                             </div>
                             <div className="flex justify-between items-center">
                                 <span className="text-slate-400 text-xs uppercase tracking-wider font-medium">Valor Original:</span>
@@ -375,7 +377,7 @@ const Receivables = () => {
                                 Valor Final a Receber
                             </span>
                             <strong className="text-3xl font-extrabold text-emerald-400 tracking-tight">
-                                {currency.format(selectedReceivable.value + Number(paymentDetails.juros) + Number(paymentDetails.multa) - Number(paymentDetails.desconto))}
+                                {currency.format((selectedReceivable.balanceDue ?? selectedReceivable.value) + Number(paymentDetails.juros) + Number(paymentDetails.multa) - Number(paymentDetails.desconto))}
                             </strong>
                         </div>
 
@@ -463,8 +465,8 @@ const StatusBadge = ({ status }: { status: string }) => {
     }
     return (
         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-sm shadow-amber-500/5">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            Pendente
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                {status === 'Parcial' ? 'Parcial' : 'Pendente'}
         </span>
     );
 };

@@ -11,6 +11,7 @@ import { formatBrazilianPhone } from '../../utils/phone';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
 import { useQueryClient } from '@tanstack/react-query';
 import { storeQueryKey } from '../../utils/api';
+import { reconcileInstallments } from '../../utils/installmentPayments';
 
 
 // Função para gerar o Payload PIX (Copia e Cola e QR Code)
@@ -545,9 +546,7 @@ const ServiceOrdersManager = () => {
         const resolvedPaidTotal = forcePaid ? finalTotal : resolvedPayments.reduce((total, payment) => total + Number(payment.amount || 0), 0);
         const resolvedPaymentStatus = forcePaid || (finalTotal > 0 && resolvedPaidTotal >= finalTotal) ? 'Pago' : resolvedPaidTotal > 0 ? 'Parcial' : formData.paymentStatus;
         const resolvedStatus = resolvedPaymentStatus === 'Pago' ? 'Paga' : formData.status;
-        const resolvedInstallments = (formData.installments || []).map(installment => forcePaid ? {
-            ...installment, status: 'Pago', paid: true, paidAt: installment.paidAt || new Date().toISOString(), paymentMethod: installment.paymentMethod || paymentMethod,
-        } : installment);
+        const resolvedInstallments = reconcileInstallments({ ...formData, payments: resolvedPayments, paidTotal: resolvedPaidTotal, paymentStatus: resolvedPaymentStatus });
         let orderData = {
             id: editingOrder ? editingOrder.id : crypto.randomUUID(),
             customerId: formData.customerId,
@@ -1498,7 +1497,7 @@ const ServiceOrdersManager = () => {
                                 )}
                                 {formData.installments.length > 0 && (
                                     <div className="rounded-xl border border-slate-800 overflow-hidden">
-                                        {formData.installments.map((installment, index) => (
+                                        {reconcileInstallments(formData).map((installment, index) => (
                                             <div key={installment.id || index} className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b last:border-0 border-slate-800">
                                                 <span className="text-slate-300">{installment.number || index + 1}/{formData.installments.length} · vence {new Date(`${installment.dueDate}T12:00:00`).toLocaleDateString('pt-BR')}</span>
                                                 <span className={installment.status === 'Pago' ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>R$ {Number(installment.amount ?? installment.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {installment.status}</span>

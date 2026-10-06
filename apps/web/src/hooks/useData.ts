@@ -6,6 +6,8 @@ import { useTenant, useUpdateTenantSettings } from './queries/useTenant';
 import { useCartStore } from '../store/cartStore';
 import { useUIStore } from '../store/uiStore';
 import { useAuthStore } from '../store/authStore';
+import { reconcileInstallments } from '../utils/installmentPayments';
+import { useMemo } from 'react';
 
 export const useData = () => {
     // Queries
@@ -17,6 +19,8 @@ export const useData = () => {
     const { data: salesData } = useSales();
     const { data: expensesData } = useReceivables();
     const { data: subscriptionsData } = useSubscriptions();
+    const serviceOrders = useMemo(() => (serviceOrdersData || []).map((order: any) => ({ ...order, installments: reconcileInstallments(order) })), [serviceOrdersData]);
+    const sales = useMemo(() => (salesData || []).map((sale: any) => ({ ...sale, installments: reconcileInstallments(sale) })), [salesData]);
 
     // Mutations
     const { mutateAsync: addProductMut } = useAddProduct();
@@ -74,11 +78,11 @@ export const useData = () => {
         const totalRevenue = totalSales + extraRevenue;
         const grossProfit = totalRevenue - totalCOGS;
         const netProfit = grossProfit - totalExpenses;
-        const pendingReceivables = (salesData || []).reduce((total: number, sale: any) => {
+        const pendingReceivables = sales.reduce((total: number, sale: any) => {
             const installments = sale.installments || [];
             if (installments.length) return total + installments
                 .filter((installment: any) => installment.status !== 'Pago' && !installment.paid)
-                .reduce((subtotal: number, installment: any) => subtotal + (Number(installment.value ?? installment.amount) || 0), 0);
+                .reduce((subtotal: number, installment: any) => subtotal + (Number(installment.balanceDue ?? installment.value ?? installment.amount) || 0), 0);
             return total + Math.max(0, Number(sale.balanceDue ?? 0) || 0);
         }, 0);
         const pendingPayables = (expensesData || []).filter((entry: any) => entry.type !== 'inflow' && entry.status === 'Pendente')
@@ -106,8 +110,8 @@ export const useData = () => {
         products: productsData || [],
         customers: customersData || [],
         services: servicesData || [],
-        serviceOrders: serviceOrdersData || [],
-        sales: salesData || [],
+        serviceOrders,
+        sales,
         expenses: expensesData || [],
         subscriptions: subscriptionsData || [],
 
@@ -145,22 +149,29 @@ export const useData = () => {
             const sale = salesData?.find((item: any) => item.id === saleId);
             if (sale) {
                 const paidAt = new Date().toISOString();
-                const newInstallments = (sale.installments || []).map((installment: any) => installment.id === installmentId
-                    ? { ...installment, status: 'Pago', paid: true, paidAt, paymentMethod: method, paidValue: finalValue, discount }
+                const currentInstallments = reconcileInstallments(sale);
+                const selected = currentInstallments.find((item: any) => item.id === installmentId);
+                if (!selected || selected.paid) return false;
+                const receipt = { id: crypto.randomUUID(), installmentId, amount: Number(finalValue ?? selected.balanceDue ?? selected.value), principalAmount: selected.balanceDue ?? selected.value, method: method || 'Dinheiro', note: 'Recebimento de parcela', paidAt };
+                const priorPayments = sale.payments?.length ? sale.payments : Number(sale.paidTotal) > 0
+                    ? [{ id: crypto.randomUUID(), amount: Number(sale.paidTotal), method: 'Saldo recebido anteriormente', paidAt }] : [];
+                const salePayments = [...priorPayments, receipt];
+                const newInstallments = currentInstallments.map((installment: any) => installment.id === installmentId
+                    ? { ...installment, status: 'Pago', paid: true, allocatedByReceipts: false, paidTotal: installment.value, balanceDue: 0, paidAt, paymentMethod: method, paidValue: finalValue, discount }
                     : installment);
                 const allPaid = newInstallments.length > 0 && newInstallments.every((installment: any) => installment.status === 'Pago' || installment.paid);
                 const paidTotal = newInstallments.filter((installment: any) => installment.status === 'Pago' || installment.paid)
-                    .reduce((sum: number, installment: any) => sum + Number(installment.paidValue ?? installment.value ?? installment.amount ?? 0), 0);
-                await updateSaleMut({ ...sale, id: saleId, installments: newInstallments, paidTotal, balanceDue: Math.max(0, Number(sale.total || 0) - paidTotal), paymentStatus: allPaid ? 'Pago' : paidTotal > 0 ? 'Parcial' : 'Pendente', status: allPaid ? 'Pago' : sale.status });
+                    .reduce((sum: number, installment: any) => sum + Number(installment.value ?? installment.amount ?? 0), 0)
+                    + newInstallments.filter((installment: any) => !installment.paid).reduce((sum: number, installment: any) => sum + Number(installment.paidTotal || 0), 0);
+                await updateSaleMut({ ...sale, id: saleId, payments: salePayments, installments: newInstallments, paidTotal, balanceDue: Math.max(0, Number(sale.total || 0) - paidTotal), paymentStatus: allPaid ? 'Pago' : paidTotal > 0 ? 'Parcial' : 'Pendente', status: allPaid ? 'Pago' : sale.status });
 
                 if (sale.osReference) {
                     const order = serviceOrdersData?.find((item: any) => item.id === sale.osReference);
                     if (order) {
                         const existingPayments = order.payments || [];
-                        const installment = newInstallments.find((item: any) => item.id === installmentId);
                         const payments = existingPayments.some((payment: any) => payment.installmentId === installmentId)
                             ? existingPayments
-                            : [...existingPayments, { id: crypto.randomUUID(), installmentId, amount: Number(finalValue ?? installment?.value ?? installment?.amount ?? 0), method: method || 'Dinheiro', note: 'Recebimento de parcela', paidAt }];
+                            : [...existingPayments, receipt];
                         await updateOrderMut({
                             ...order, id: order.id, installments: newInstallments, payments, paidTotal,
                             balanceDue: Math.max(0, Number(order.totalValue || sale.total || 0) - paidTotal),

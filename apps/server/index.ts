@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { reconcileInstallments } from '../web/src/utils/installmentPayments.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -430,6 +431,7 @@ const syncSalePaymentToServiceOrder = async (slug: string, sale: any) => {
     await upsertStoreRecord(slug, 'service_orders', {
         ...order,
         installments: sale.installments || order.installments || [],
+        payments: sale.payments || order.payments || [],
         paidTotal,
         balanceDue: paid ? 0 : Math.max(0, total - paidTotal),
         paymentStatus: paid ? 'Pago' : paidTotal > 0 ? 'Parcial' : (sale.paymentStatus || order.paymentStatus || 'Pendente'),
@@ -916,7 +918,7 @@ const processPaymentReminders = async () => {
             const businessName = String(tenant.businessName || tenant.shortName || 'Feitosa Soluções');
 
             for (const sale of sales as any[]) {
-                let installments = [...(sale.installments || [])];
+                let installments = reconcileInstallments(sale);
                 const linkedOrder = sale.osReference ? (orders as any[]).find(order => order.id === sale.osReference) : null;
                 const orderIsPaid = linkedOrder && (linkedOrder.paymentStatus === 'Pago' || ['Paga', 'Pago'].includes(linkedOrder.status));
                 const saleIsPaid = sale.paymentStatus === 'Pago' || sale.status === 'Pago';
@@ -942,7 +944,7 @@ const processPaymentReminders = async () => {
 
                     const reminderLog = { ...(installment.emailReminderLog || {}) };
                     const customerEmail = String(sale.customerEmail || sale.userEmail || '').trim();
-                    const amount = Number(installment.value ?? installment.amount ?? 0);
+                    const amount = Number(installment.balanceDue ?? installment.value ?? installment.amount ?? 0);
                     const formattedAmount = amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                     const dueDate = String(installment.dueDate || '').split('-').reverse().join('/');
                     const number = installment.number || installment.installmentNumber || index + 1;
@@ -1597,6 +1599,7 @@ app.post('/api/store/:slug/:collection', requireStoreUser, requireCollectionAcce
         if (req.params.collection === 'integrations' && req.body.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
         const slug = cleanSlug(req.params.slug);
         let input = req.body;
+        if (['sales', 'service_orders'].includes(req.params.collection)) input = { ...input, installments: reconcileInstallments(input) };
         if (req.params.collection === 'integrations') {
             const currentRecords = await listStoreRecords(slug, 'integrations') || [];
             const current = (currentRecords as any[]).find(record => record.id === req.body.id) || {};
@@ -1625,6 +1628,7 @@ app.put('/api/store/:slug/:collection/:id', requireStoreUser, requireCollectionA
         if (req.params.collection === 'integrations' && req.params.id === 'nfse') return res.status(400).json({ message: 'Use a configuração fiscal protegida da NFS-e.' });
         const slug = cleanSlug(req.params.slug);
         let input = { ...req.body, id: req.params.id };
+        if (['sales', 'service_orders'].includes(req.params.collection)) input = { ...input, installments: reconcileInstallments(input) };
         if (req.params.collection === 'integrations') {
             const currentRecords = await listStoreRecords(slug, 'integrations') || [];
             const current = (currentRecords as any[]).find(record => record.id === req.params.id) || {};

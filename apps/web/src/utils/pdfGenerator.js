@@ -139,8 +139,11 @@ export const generateProfessionalPDF = async (options) => {
         doc.setFontSize(10);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(...colorText);
-        customerInfo.forEach((line, index) => {
-            doc.text(line, 15, startY + 7 + (index * 6));
+        let customerY = startY + 7;
+        customerInfo.forEach(line => {
+            const lines = doc.splitTextToSize(String(line), 95);
+            doc.text(lines, 15, customerY);
+            customerY += lines.length * 5 + 1;
         });
 
         // Right Column: Document Info
@@ -152,18 +155,21 @@ export const generateProfessionalPDF = async (options) => {
         doc.setFontSize(10);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(...colorText);
-        documentInfo.forEach((line, index) => {
-            const yPos = startY + 7 + (index * 6);
-            doc.text(line.label, 120, yPos);
+        let documentY = startY + 7;
+        documentInfo.forEach(line => {
+            const label = doc.splitTextToSize(String(line.label), 32);
+            const value = doc.splitTextToSize(String(line.value), 40);
+            doc.text(label, 120, documentY);
             doc.setFont('helvetica', 'bold');
-            doc.text(line.value, 195, yPos, { align: 'right' });
+            doc.text(value, 195, documentY, { align: 'right' });
             doc.setFont('helvetica', 'normal');
+            documentY += Math.max(label.length, value.length) * 5 + 1;
         });
 
         // --- TABLE ---
         autoTable(doc, {
             margin: { left: 15, right: 15, bottom: 20 },
-            startY: startY + 35,
+            startY: Math.max(startY + 35, customerY + 5, documentY + 5),
             head: [tableColumns],
             body: tableRows,
             theme: 'grid',
@@ -211,11 +217,11 @@ export const generateProfessionalPDF = async (options) => {
         doc.setFontSize(12);
         doc.setTextColor(...colorPrimary);
         doc.setFont('helvetica', 'bold');
-        doc.text(totalLabel, 115, finalY + 1);
+        doc.text(totalLabel, 115, finalY - 2);
 
         doc.setFontSize(16);
         doc.setTextColor(...colorAccent); 
-        doc.text(`R$ ${totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, 190, finalY + 2, { align: 'right' });
+        doc.text(`R$ ${totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, 190, finalY + 9, { align: 'right' });
 
         if (summaryRows.length) {
             finalY += compactStyle ? 15 : 20;
@@ -254,6 +260,8 @@ export const generateProfessionalPDF = async (options) => {
             finalY = doc.lastAutoTable.finalY;
         }
 
+        if (!summaryRows.length && !paymentRows.length) finalY += 14;
+
         if (signatureLabels.length) {
             finalY += compactStyle ? 14 : 22;
             if (finalY > 250) { doc.addPage(); finalY = 35; }
@@ -277,8 +285,11 @@ export const generateProfessionalPDF = async (options) => {
             if (finalY > 250) { doc.addPage(); finalY = 25; }
             doc.setFillColor(248, 250, 252);
             doc.setDrawColor(226, 232, 240);
-            const splitTerms = doc.splitTextToSize(terms, 180);
+            doc.setFontSize(7);
+            doc.setFont('helvetica', 'normal');
+            const splitTerms = doc.splitTextToSize(terms, 172);
             const termsHeight = Math.max(18, splitTerms.length * (compactStyle ? 3.1 : 3.5) + 11);
+            if (finalY + termsHeight > doc.internal.pageSize.height - 20) { doc.addPage(); finalY = 20; }
             doc.roundedRect(15, finalY, 180, termsHeight, 2, 2, 'FD');
             doc.setFontSize(8);
             doc.setFont('helvetica', 'bold');
@@ -295,7 +306,7 @@ export const generateProfessionalPDF = async (options) => {
         const drawPixBox = async () => {
             if (options.pixPayload) {
                 // If it pushes too far down, add a page
-                if (finalY > 230) {
+                if (finalY + 65 > doc.internal.pageSize.height - 20) {
                     doc.addPage();
                     finalY = 20;
                 } else {
@@ -334,6 +345,8 @@ export const generateProfessionalPDF = async (options) => {
 
         // --- FOOTER ---
         const pageHeight = doc.internal.pageSize.height;
+        for (let page = 1; page <= doc.getNumberOfPages(); page += 1) {
+        doc.setPage(page);
         doc.setDrawColor(230, 230, 230);
         doc.line(15, pageHeight - 15, 195, pageHeight - 15);
 
@@ -342,6 +355,7 @@ export const generateProfessionalPDF = async (options) => {
         doc.setFont('helvetica', 'normal');
         doc.text(`Gerado por ${tenant.businessName || 'Feitosa Soluções em Informática'} - ${new Date().toLocaleString('pt-BR')}`, 105, pageHeight - 10, { align: 'center' });
         doc.text(testMode ? 'Simulação local — não transmitida ao Sistema Nacional NFS-e.' : 'Documento gerado eletronicamente.', 105, pageHeight - 6, { align: 'center' });
+        }
 
         if (options.returnBase64) {
             const dataUri = doc.output('datauristring');
