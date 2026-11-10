@@ -169,9 +169,13 @@ export const useData = () => {
                     ? { ...installment, status: 'Pago', paid: true, allocatedByReceipts: false, paidTotal: installment.value, balanceDue: 0, paidAt, paymentMethod: method, paidValue: finalValue, discount, ...(receiptPdf ? { receiptPdf } : {}) }
                     : installment);
                 const allPaid = newInstallments.length > 0 && newInstallments.every((installment: any) => installment.status === 'Pago' || installment.paid);
-                const paidTotal = newInstallments.filter((installment: any) => installment.status === 'Pago' || installment.paid)
+                const schedulePaidTotal = newInstallments.filter((installment: any) => installment.status === 'Pago' || installment.paid)
                     .reduce((sum: number, installment: any) => sum + Number(installment.value ?? installment.amount ?? 0), 0)
                     + newInstallments.filter((installment: any) => !installment.paid).reduce((sum: number, installment: any) => sum + Number(installment.paidTotal || 0), 0);
+                // Schedules generated after an entry already contain only the
+                // outstanding balance. Keep that entry in the overall total
+                // when a later installment is received.
+                const paidTotal = Math.min(Number(sale.total || 0), (Number(sale.installmentPaymentOffset) || 0) + schedulePaidTotal);
                 await updateSaleMut({ ...sale, id: saleId, payments: salePayments, installments: newInstallments, paidTotal, balanceDue: Math.max(0, Number(sale.total || 0) - paidTotal), paymentStatus: allPaid ? 'Pago' : paidTotal > 0 ? 'Parcial' : 'Pendente', status: allPaid ? 'Pago' : sale.status });
 
                 if (sale.osReference) {
@@ -182,7 +186,7 @@ export const useData = () => {
                             ? existingPayments
                             : [...existingPayments, receipt];
                         await updateOrderMut({
-                            ...order, id: order.id, installments: newInstallments, payments, paidTotal,
+                            ...order, id: order.id, installments: newInstallments, payments, installmentPaymentOffset: Number(order.installmentPaymentOffset) || Number(sale.installmentPaymentOffset) || 0, paidTotal,
                             balanceDue: Math.max(0, Number(order.totalValue || sale.total || 0) - paidTotal),
                             paymentStatus: allPaid ? 'Pago' : 'Parcial', status: allPaid ? 'Paga' : order.status,
                         });

@@ -12,7 +12,11 @@ export function reconcileInstallments(record: any) {
         ? 0 : part.paid || ['Pago', 'Paga'].includes(part.status)
             ? cents(part.value ?? part.amount) : cents(part.paidTotal));
     const recorded = Array.isArray(record.payments) ? payments.reduce((sum: number, p: any) => sum + cents(p.principalAmount ?? p.amount), 0) : cents(record.paidTotal);
-    let available = Math.max(0, recorded - explicit.reduce((sum: number, value: number) => sum + value, 0));
+    // A schedule can be generated after an entry has been received. In that
+    // case its values already represent the remaining balance, so do not
+    // allocate that same entry to the first installment a second time.
+    const schedulePaymentOffset = cents(record.installmentPaymentOffset);
+    let available = Math.max(0, recorded - schedulePaymentOffset - explicit.reduce((sum: number, value: number) => sum + value, 0));
     const fullyPaid = record.paid || ['Pago', 'Paga'].includes(record.paymentStatus) || ['Pago', 'Paga'].includes(record.status);
     return parts.map((part: any, index: number) => {
         if (['Cancelado', 'Cancelada'].includes(part.status)) return part;

@@ -12,6 +12,7 @@ import { useMercadoPago } from '../../hooks/useMercadoPago';
 import { useQueryClient } from '@tanstack/react-query';
 import { storeQueryKey } from '../../utils/api';
 import { reconcileInstallments } from '../../utils/installmentPayments';
+import { calculateInstallmentAmounts } from '../../utils/installmentSchedule';
 
 
 // Função para gerar o Payload PIX (Copia e Cola e QR Code)
@@ -225,7 +226,7 @@ const ServiceOrdersManager = () => {
     const [formData, setFormData] = useState({
         customerId: '', clientName: '', clientPhone: '', clientEmail: '',
         device: '', devicePassword: '', issueDescription: '', technicalReport: '', warranty: '90 dias',
-        status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
+        status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], installmentPaymentOffset: 0, manualTotal: '', orderType: 'Manutenção', financeSynced: false
     });
 
     const [selectedItem, setSelectedItem] = useState('');
@@ -456,6 +457,25 @@ const ServiceOrdersManager = () => {
         setExpenseAmount('');
     };
 
+    const buildInstallments = (payments = formData.payments) => {
+        const count = Math.max(1, Math.min(60, Number(installmentCount) || 1));
+        const interval = Math.max(1, Math.min(365, Number(installmentIntervalDays) || 30));
+        const received = payments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+        const baseDate = firstDueDate
+            ? new Date(`${firstDueDate}T12:00:00`)
+            : new Date(Date.now() + interval * 24 * 60 * 60 * 1000);
+        const amounts = calculateInstallmentAmounts(finalTotal, received, count);
+        return amounts.map((amount, index) => {
+            const dueDate = new Date(baseDate);
+            dueDate.setDate(baseDate.getDate() + index * interval);
+            return {
+                id: crypto.randomUUID(), number: index + 1, installmentNumber: index + 1,
+                amount, value: amount, dueDate: dueDate.toISOString().slice(0, 10),
+                status: 'Pendente', paid: false,
+            };
+        });
+    };
+
     const handleAddPayment = () => {
         const amount = Number(String(paymentAmount).replace(',', '.'));
         if (!Number.isFinite(amount) || amount <= 0) {
@@ -464,36 +484,44 @@ const ServiceOrdersManager = () => {
         }
         const payments = [...formData.payments, { id: crypto.randomUUID(), amount, method: paymentMethod, note: paymentNote.trim(), paidAt: new Date().toISOString() }];
         const nextPaidTotal = payments.reduce((total, payment) => total + Number(payment.amount || 0), 0);
-        setFormData({ ...formData, payments, paymentStatus: finalTotal > 0 && nextPaidTotal >= finalTotal ? 'Pago' : 'Parcial' });
+        const shouldRecalculate = formData.installments.length > 0;
+        setFormData({
+            ...formData,
+            payments,
+            ...(shouldRecalculate ? { installments: buildInstallments(payments), installmentPaymentOffset: nextPaidTotal } : {}),
+            paymentStatus: finalTotal > 0 && nextPaidTotal >= finalTotal ? 'Pago' : 'Parcial'
+        });
         setPaymentAmount('');
         setPaymentNote('');
+        if (shouldRecalculate) showToast.success('Entrada registrada e parcelas recalculadas pelo saldo restante.');
     };
 
     const handleGenerateInstallments = () => {
         const count = Math.max(1, Math.min(60, Number(installmentCount) || 1));
-        const interval = Math.max(1, Math.min(365, Number(installmentIntervalDays) || 30));
         if (finalTotal <= 0) {
             showToast.error('Informe os itens ou o valor final antes de gerar as parcelas.');
             return;
         }
-        const baseDate = firstDueDate
-            ? new Date(`${firstDueDate}T12:00:00`)
-            : new Date(Date.now() + interval * 24 * 60 * 60 * 1000);
-        const baseAmount = Math.floor((finalTotal / count) * 100) / 100;
-        const installments = Array.from({ length: count }, (_, index) => {
-            const dueDate = new Date(baseDate);
-            dueDate.setDate(baseDate.getDate() + index * interval);
-            const amount = index === count - 1
-                ? Number((finalTotal - baseAmount * (count - 1)).toFixed(2))
-                : baseAmount;
-            return {
-                id: crypto.randomUUID(), number: index + 1, installmentNumber: index + 1,
-                amount, value: amount, dueDate: dueDate.toISOString().slice(0, 10),
-                status: 'Pendente', paid: false,
-            };
+        const installments = buildInstallments();
+        setFormData({
+            ...formData,
+            installments,
+            installmentPaymentOffset: paidTotal,
+            paymentStatus: finalTotal > 0 && paidTotal >= finalTotal ? 'Pago' : paidTotal > 0 ? 'Parcial' : 'Pendente'
         });
-        setFormData({ ...formData, installments, paymentStatus: 'Pendente' });
-        showToast.success(`${count} parcela(s) calculada(s).`);
+        showToast.success(`${count} parcela(s) calculada(s) sobre o saldo devedor.`);
+    };
+
+    const handleRemovePayment = (index) => {
+        const payments = formData.payments.filter((_, paymentIndex) => paymentIndex !== index);
+        const nextPaidTotal = payments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+        const shouldRecalculate = formData.installments.length > 0;
+        setFormData({
+            ...formData,
+            payments,
+            ...(shouldRecalculate ? { installments: buildInstallments(payments), installmentPaymentOffset: nextPaidTotal } : {}),
+            paymentStatus: nextPaidTotal > 0 ? 'Parcial' : 'Pendente'
+        });
     };
 
     const handleManualTotalChange = (e) => {
@@ -513,6 +541,17 @@ const ServiceOrdersManager = () => {
     const handleEdit = (order) => {
         setEditingOrder(order);
         if ((order.installments || []).length > 0) setPaymentMethod('A prazo');
+        if ((order.installments || []).length > 0) {
+            const installments = order.installments;
+            setInstallmentCount(installments.length);
+            setFirstDueDate(String(installments[0]?.dueDate || '').slice(0, 10));
+            if (installments.length > 1) {
+                const first = new Date(`${installments[0].dueDate}T12:00:00`);
+                const second = new Date(`${installments[1].dueDate}T12:00:00`);
+                const interval = Math.round((second.getTime() - first.getTime()) / (24 * 60 * 60 * 1000));
+                setInstallmentIntervalDays(interval > 0 ? interval : 30);
+            }
+        }
         setFormData({
             customerId: order.customerId || '',
             clientName: order.clientName || '',
@@ -529,6 +568,7 @@ const ServiceOrdersManager = () => {
             expenses: order.expenses || [],
             payments: order.payments || [],
             installments: order.installments || [],
+            installmentPaymentOffset: Number(order.installmentPaymentOffset) || 0,
             manualTotal: Number(order.manualTotal) > 0 ? String(order.manualTotal) : (order.items && order.items.length > 0 ? '' : String(order.totalValue || '')),
             orderType: order.orderType || 'Manutenção',
             financeSynced: order.financeSynced || false
@@ -564,6 +604,7 @@ const ServiceOrdersManager = () => {
             expenses: formData.expenses,
             payments: resolvedPayments,
             installments: resolvedInstallments,
+            installmentPaymentOffset: Number(formData.installmentPaymentOffset) || 0,
             manualTotal: hasValidManualTotal ? manualTotalValue : undefined,
             totalValue: finalTotal,
             itemCostTotal,
@@ -598,6 +639,7 @@ const ServiceOrdersManager = () => {
                     expenses: orderData.expenses,
                     payments: orderData.payments,
                     installments: orderData.installments,
+                    installmentPaymentOffset: orderData.installmentPaymentOffset,
                     paidTotal: orderData.paidTotal,
                     balanceDue: orderData.balanceDue,
                     paymentStatus: orderData.paymentStatus,
@@ -679,7 +721,7 @@ const ServiceOrdersManager = () => {
     const resetForm = () => {
         setFormData({
             customerId: '', clientName: '', clientPhone: '', clientEmail: '', device: '', devicePassword: '',
-            issueDescription: '', technicalReport: '', warranty: '90 dias', status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], manualTotal: '', orderType: 'Manutenção', financeSynced: false
+            issueDescription: '', technicalReport: '', warranty: '90 dias', status: 'Aberta', paymentStatus: 'Pendente', items: [], expenses: [], payments: [], installments: [], installmentPaymentOffset: 0, manualTotal: '', orderType: 'Manutenção', financeSynced: false
         });
         setSelectedItem('');
         setItemQty(1);
@@ -1492,7 +1534,8 @@ const ServiceOrdersManager = () => {
                                             <label className="text-[11px] text-slate-400">Dias entre parcelas<input type="number" min="1" max="365" value={installmentIntervalDays} onChange={e => setInstallmentIntervalDays(Number(e.target.value))} className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-sm text-slate-200" /></label>
                                             <label className="text-[11px] text-slate-400">1º vencimento<input type="date" value={firstDueDate} onChange={e => setFirstDueDate(e.target.value)} className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-sm text-slate-200" /></label>
                                         </div>
-                                        <button type="button" onClick={handleGenerateInstallments} className="w-full px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold">Calcular vencimentos</button>
+                                        <div className="text-xs text-amber-200">Entrada recebida: R$ {paidTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · Saldo a parcelar: R$ {balanceDue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+                                        <button type="button" onClick={handleGenerateInstallments} className="w-full px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold">Calcular vencimentos pelo saldo</button>
                                     </div>
                                 )}
                                 {formData.installments.length > 0 && (
@@ -1500,7 +1543,9 @@ const ServiceOrdersManager = () => {
                                         {reconcileInstallments(formData).map((installment, index) => (
                                             <div key={installment.id || index} className="flex items-center justify-between gap-3 px-3 py-2 text-xs border-b last:border-0 border-slate-800">
                                                 <span className="text-slate-300">{installment.number || index + 1}/{formData.installments.length} · vence {new Date(`${installment.dueDate}T12:00:00`).toLocaleDateString('pt-BR')}</span>
-                                                <span className={installment.status === 'Pago' ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>R$ {Number(installment.amount ?? installment.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {installment.status}</span>
+                                                <span className={installment.status === 'Pago' ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>{installment.status === 'Parcial'
+                                                    ? <>Saldo R$ {Number(installment.balanceDue).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} <span className="text-slate-400 font-normal">(recebido R$ {Number(installment.paidTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })})</span> · Parcial</>
+                                                    : <>R$ {Number(installment.balanceDue ?? installment.amount ?? installment.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {installment.status}</>}</span>
                                             </div>
                                         ))}
                                     </div>
@@ -1508,7 +1553,7 @@ const ServiceOrdersManager = () => {
                                 {formData.payments.map((payment, index) => (
                                     <div key={payment.id || index} className="flex items-center justify-between gap-3 text-sm border-t border-slate-800 pt-2">
                                         <span className="text-slate-300">{payment.method} · {new Date(payment.paidAt).toLocaleString('pt-BR')}</span>
-                                        <div className="flex items-center gap-2"><span className="font-semibold text-emerald-300">R$ {Number(payment.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><button type="button" onClick={() => setFormData({ ...formData, payments: formData.payments.filter((_, i) => i !== index) })} className="text-slate-500 hover:text-rose-400"><Trash2 className="w-4 h-4" /></button></div>
+                                        <div className="flex items-center gap-2"><span className="font-semibold text-emerald-300">R$ {Number(payment.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span><button type="button" onClick={() => handleRemovePayment(index)} className="text-slate-500 hover:text-rose-400"><Trash2 className="w-4 h-4" /></button></div>
                                     </div>
                                 ))}
                             </div>
