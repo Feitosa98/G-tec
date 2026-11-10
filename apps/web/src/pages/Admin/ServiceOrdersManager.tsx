@@ -740,6 +740,13 @@ const ServiceOrdersManager = () => {
     const printOrder = async (order) => {
         try {
             const payableTotal = resolveOrderTotal(order);
+            const orderInstallments = reconcileInstallments(order);
+            const installmentRows = orderInstallments.map((installment: any, index: number) => [
+                `${installment.number || index + 1}/${orderInstallments.length}`,
+                installment.dueDate ? new Date(`${String(installment.dueDate).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : 'A combinar',
+                `R$ ${Number(installment.balanceDue ?? installment.value ?? installment.amount ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                installment.status || 'Pendente',
+            ]);
             // Com Mercado Pago ativo, nunca mistura a cobrança com a chave PIX fixa.
             const txid = `OS${order.id.substring(0,10).replace(/[^A-Za-z0-9]/g, '').toUpperCase()}`;
             let mercadoPagoPix = pixPayments[order.id]?.qrCode;
@@ -829,6 +836,7 @@ const ServiceOrdersManager = () => {
                     { label: 'SITUAÇÃO', value: order.paymentStatus || (openBalance === 0 ? 'PAGO' : 'PENDENTE'), color: openBalance === 0 ? [22, 163, 74] : [217, 119, 6] },
                 ],
                 paymentRows: (order.payments || []).map(payment => [new Date(payment.paidAt).toLocaleString('pt-BR'), payment.method || '-', `R$ ${Number(payment.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, payment.note || '']),
+                installmentRows,
                 signatureLabels: ['Assinatura do cliente', tenant.shortName || tenant.businessName || 'Empresa'],
                 filename: `OS_${serviceOrderNumber(order)}.pdf`
             });
@@ -859,6 +867,7 @@ const ServiceOrdersManager = () => {
                 (sum: number, payment: any) => sum + Number(payment.amount || 0), 0
             );
             const balance = Math.max(0, total - paid);
+            const orderInstallments = reconcileInstallments(order);
             const rows = (order.items || []).map((item: any) => [
                 item.type || '-', item.name || '-', String(item.qty || 1),
                 `R$ ${Number(item.price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
@@ -896,6 +905,12 @@ const ServiceOrdersManager = () => {
                 paymentRows: (order.payments || []).map((payment: any) => [
                     new Date(payment.paidAt).toLocaleString('pt-BR'), payment.method || '-',
                     `R$ ${Number(payment.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`, payment.note || '',
+                ]),
+                installmentRows: orderInstallments.map((installment: any, index: number) => [
+                    `${installment.number || index + 1}/${orderInstallments.length}`,
+                    installment.dueDate ? new Date(`${String(installment.dueDate).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : 'A combinar',
+                    `R$ ${Number(installment.balanceDue ?? installment.value ?? installment.amount ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+                    installment.status || 'Pendente',
                 ]),
                 signatureLabels: ['Assinatura do cliente', tenant.shortName || tenant.businessName || 'Empresa'],
                 filename: `OS_${serviceOrderNumber(order)}.pdf`,

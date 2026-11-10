@@ -60,6 +60,7 @@ export const generateProfessionalPDF = async (options) => {
         compactStyle = false,
         summaryRows = [],
         paymentRows = [],
+        installmentRows = [],
         signatureLabels = [],
     } = options;
 
@@ -260,7 +261,26 @@ export const generateProfessionalPDF = async (options) => {
             finalY = doc.lastAutoTable.finalY;
         }
 
-        if (!summaryRows.length && !paymentRows.length) finalY += 14;
+        if (installmentRows.length) {
+            finalY += compactStyle ? 7 : 12;
+            if (finalY > 225) { doc.addPage(); finalY = 20; }
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(...colorPrimary);
+            doc.text('Parcelas e vencimentos', 15, finalY);
+            autoTable(doc, {
+                startY: finalY + 4,
+                head: [['Parcela', 'Vencimento', 'Valor', 'Situação']],
+                body: installmentRows,
+                theme: 'grid',
+                headStyles: { fillColor: colorPrimary, textColor: [255, 255, 255], fontSize: 8 },
+                bodyStyles: { fontSize: compactStyle ? 7 : 8, textColor: colorText, cellPadding: compactStyle ? 1.8 : 3 },
+                columnStyles: { 0: { halign: 'center' }, 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'center' } },
+            });
+            finalY = doc.lastAutoTable.finalY;
+        }
+
+        if (!summaryRows.length && !paymentRows.length && !installmentRows.length) finalY += 14;
 
         if (signatureLabels.length) {
             finalY += compactStyle ? 14 : 22;

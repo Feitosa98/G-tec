@@ -1,19 +1,21 @@
 import { useMemo, useState } from 'react';
-import { CalendarClock, CheckCircle, Clock3, Search, TriangleAlert, WalletCards, X, MessageCircle, CreditCard, Copy } from 'lucide-react';
+import { CalendarClock, CheckCircle, Clock3, Search, TriangleAlert, WalletCards, X, MessageCircle, CreditCard, Copy, Printer } from 'lucide-react';
 import { format } from 'date-fns';
 import { useData } from '../../hooks/useData';
 import { showToast } from '../../utils/toast';
 import { useNotify } from '../../hooks/useNotify';
 import { useMercadoPago } from '../../hooks/useMercadoPago';
+import { generateProfessionalPDF } from '../../utils/pdfGenerator';
 
 const currency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 const dueDateValue = (value: string) => new Date(`${String(value).slice(0, 10)}T12:00:00`);
 
 const Receivables = () => {
-    const { sales, customers, markInstallmentPaid, showConfirm, showAlert } = useData();
+    const { sales, customers, tenant, markInstallmentPaid, showConfirm, showAlert } = useData();
     const { notify } = useNotify();
     const { generatePaymentLink, copyLinkToClipboard } = useMercadoPago();
     const [mpLinks, setMpLinks] = useState<Record<string, string>>({});
+    const [selectedForPrint, setSelectedForPrint] = useState<string[]>([]);
 
     const handleChargeWhatsApp = (receivable: any) => {
         const phone = receivable.customerPhone || receivable.clientPhone || '';
@@ -59,6 +61,56 @@ const Receivables = () => {
             || String(receivable.saleId).toLowerCase().includes(normalizedSearch);
         return matchesStatus && matchesSearch;
     });
+
+    const selectedInstallments = receivables.filter(receivable => selectedForPrint.includes(receivable.id));
+
+    const togglePrintSelection = (installmentId: string) => {
+        setSelectedForPrint(current => current.includes(installmentId)
+            ? current.filter(id => id !== installmentId)
+            : [...current, installmentId]);
+    };
+
+    const printInstallments = async (items: any[]) => {
+        if (!items.length) {
+            showToast.error('Selecione ao menos uma parcela para imprimir.');
+            return;
+        }
+        const customerNames = [...new Set(items.map(item => item.customerName).filter(Boolean))];
+        const openTotal = items.reduce((total, item) => total + Number(item.balanceDue ?? item.value ?? item.amount ?? 0), 0);
+        const generated = await generateProfessionalPDF({
+            tenant,
+            title: items.length === 1 ? 'COBRANÇA DE PARCELA' : 'RELAÇÃO DE PARCELAS',
+            documentNumber: items.length === 1 ? `#${String(items[0].saleId).slice(0, 8)} - ${items[0].number}/${items[0].totalInstallments}` : `${items.length} parcelas selecionadas`,
+            customerInfo: customerNames.length === 1
+                ? [customerNames[0], items[0].customerPhone || 'Sem telefone', items[0].customerEmail || 'Sem e-mail']
+                : ['Clientes selecionados', customerNames.join(', ')],
+            documentInfo: [
+                { label: 'Emissão:', value: new Date().toLocaleDateString('pt-BR') },
+                { label: 'Parcelas:', value: String(items.length) },
+                { label: 'Situação:', value: items.every(item => item.displayStatus === 'Pago') ? 'PAGO' : 'EM ABERTO' },
+            ],
+            tableColumns: ['Parcela', 'Vencimento', 'Saldo', 'Situação'],
+            tableRows: items.map(item => [
+                `${item.number}/${item.totalInstallments}`,
+                item.dueDate ? format(dueDateValue(item.dueDate), 'dd/MM/yyyy') : 'A combinar',
+                currency.format(Number(item.balanceDue ?? item.value ?? item.amount ?? 0)),
+                item.displayStatus,
+            ]),
+            totalLabel: 'TOTAL EM ABERTO:',
+            totalValue: openTotal,
+            summaryRows: [
+                { label: 'CLIENTE(S)', value: customerNames.length === 1 ? customerNames[0] : String(customerNames.length), color: [36, 65, 180] },
+                { label: 'PARCELAS', value: String(items.length), color: [36, 65, 180] },
+                { label: 'SITUAÇÃO', value: items.every(item => item.displayStatus === 'Pago') ? 'PAGO' : 'EM ABERTO', color: openTotal > 0 ? [217, 119, 6] : [22, 163, 74] },
+            ],
+            terms: 'Documento de cobrança. Em caso de dúvida, entre em contato com a empresa antes do vencimento.',
+            premiumStyle: true,
+            compactStyle: true,
+            filename: items.length === 1 ? `Cobranca_parcela_${items[0].number}.pdf` : 'Cobrancas_selecionadas.pdf',
+        });
+        if (generated) showToast.success(items.length === 1 ? 'Cobrança individual pronta para impressão.' : 'Relação de parcelas pronta para impressão.');
+        else showToast.error('Não foi possível gerar a impressão das parcelas.');
+    };
 
     const totals = receivables.reduce((summary, receivable) => {
         summary.paid += Number(receivable.paidTotal || 0);
@@ -183,6 +235,14 @@ const Receivables = () => {
                         ))}
                     </select>
                 </div>
+                <button
+                    type="button"
+                    disabled={!selectedInstallments.length}
+                    onClick={() => printInstallments(selectedInstallments)}
+                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 text-white transition-all"
+                >
+                    <Printer size={17} /> Imprimir selecionadas {selectedInstallments.length ? `(${selectedInstallments.length})` : ''}
+                </button>
             </div>
 
             {/* Receivables Table */}
@@ -191,6 +251,7 @@ const Receivables = () => {
                     <table className="w-full text-left text-sm border-collapse">
                         <thead>
                             <tr className="border-b border-slate-800/80 bg-slate-900/80 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                                <th className="px-4 py-4"><span className="sr-only">Selecionar</span></th>
                                 <th className="px-6 py-4">Cliente</th>
                                 <th className="px-6 py-4">Pedido</th>
                                 <th className="px-6 py-4">Parcela</th>
@@ -203,6 +264,9 @@ const Receivables = () => {
                         <tbody className="divide-y divide-slate-800/50 text-slate-200">
                             {filteredReceivables.map(receivable => (
                                 <tr key={receivable.id} className="hover:bg-slate-800/30 transition-colors duration-150 group">
+                                    <td className="px-4 py-4">
+                                        <input type="checkbox" checked={selectedForPrint.includes(receivable.id)} onChange={() => togglePrintSelection(receivable.id)} aria-label={`Selecionar parcela ${receivable.number}`} className="h-4 w-4 accent-indigo-500 cursor-pointer" />
+                                    </td>
                                     <td className="px-6 py-4">
                                         <strong className="font-semibold text-white group-hover:text-emerald-400 transition-colors block">
                                             {receivable.customerName}
@@ -251,6 +315,13 @@ const Receivables = () => {
                                                     <MessageCircle className="w-4 h-4" />
                                                 </button>
                                             )}
+                                            <button
+                                                onClick={() => printInstallments([receivable])}
+                                                title="Imprimir esta parcela"
+                                                className="p-2 text-indigo-300 hover:text-indigo-200 hover:bg-indigo-500/10 rounded-lg transition-all"
+                                            >
+                                                <Printer size={14} />
+                                            </button>
                                             {mpLinks[receivable.id] ? (
                                                 <button
                                                     onClick={() => copyLinkToClipboard(mpLinks[receivable.id])}
